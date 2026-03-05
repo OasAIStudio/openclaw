@@ -321,7 +321,10 @@ export function attachGatewayWsMessageHandler(params: {
   const remoteIsTrustedProxy = isTrustedProxyAddress(remoteAddr, trustedProxies);
   const hasUntrustedProxyHeaders = hasProxyHeaders && !remoteIsTrustedProxy;
   const hostIsLocalish = isLocalishHost(requestHost);
-  const isLocalClient = isLocalDirectRequest(upgradeReq, trustedProxies, allowRealIpFallback);
+  const hasLocalIpPairingContext = isLoopbackAddress(clientIp) && !hasUntrustedProxyHeaders;
+  const isLocalClient =
+    isLocalDirectRequest(upgradeReq, trustedProxies, allowRealIpFallback) ||
+    hasLocalIpPairingContext;
   const reportedClientIp =
     isLocalClient || hasUntrustedProxyHeaders
       ? undefined
@@ -336,7 +339,7 @@ export function attachGatewayWsMessageHandler(params: {
         "Configure gateway.trustedProxies to restore local client detection behind your proxy.",
     );
   }
-  if (!hostIsLocalish && isLoopbackAddress(remoteAddr) && !hasProxyHeaders) {
+  if (!isLocalClient && !hostIsLocalish && isLoopbackAddress(remoteAddr) && !hasProxyHeaders) {
     logWsControl.warn(
       "Loopback connection with non-local Host header. " +
         "Treating it as remote. If you're behind a reverse proxy, " +

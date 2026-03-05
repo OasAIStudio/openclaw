@@ -153,6 +153,42 @@ describe("gateway auth browser hardening", () => {
     });
   });
 
+  test("auto-approves non-browser loopback clients even with non-local host header", async () => {
+    const { listDevicePairing } = await import("../infra/device-pairing.js");
+    testState.gatewayAuth = { mode: "token", token: "secret" };
+
+    await withGatewayServer(async ({ port }) => {
+      const ws = await openWs(port, {
+        host: `gateway.internal:${port}`,
+      });
+      try {
+        const nonce = await readConnectChallengeNonce(ws);
+        expect(typeof nonce).toBe("string");
+        const { identity, device } = await createSignedDevice({
+          token: "secret",
+          scopes: ["operator.admin"],
+          clientId: TEST_OPERATOR_CLIENT.id,
+          clientMode: TEST_OPERATOR_CLIENT.mode,
+          identityPath: path.join(os.tmpdir(), `openclaw-browser-device-${randomUUID()}.json`),
+          nonce: String(nonce ?? ""),
+        });
+        const res = await connectReq(ws, {
+          token: "secret",
+          scopes: ["operator.admin"],
+          client: TEST_OPERATOR_CLIENT,
+          device,
+        });
+        expect(res.ok).toBe(true);
+
+        const pairing = await listDevicePairing();
+        const pending = pairing.pending.find((entry) => entry.deviceId === identity.deviceId);
+        expect(pending).toBeUndefined();
+      } finally {
+        ws.close();
+      }
+    });
+  });
+
   test("rejects forged loopback origin for control-ui when proxy headers make client non-local", async () => {
     testState.gatewayAuth = { mode: "token", token: "secret" };
     await withGatewayServer(async ({ port }) => {
