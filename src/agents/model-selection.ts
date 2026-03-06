@@ -362,6 +362,108 @@ export function resolveSubagentConfiguredModelSelection(params: {
   );
 }
 
+function isKnownSubagentModelProvider(params: {
+  cfg: OpenClawConfig;
+  providerRaw: string;
+}): boolean {
+  const normalizedProvider = normalizeProviderId(params.providerRaw);
+  if (findNormalizedProviderKey(params.cfg.models?.providers, params.providerRaw)) {
+    return true;
+  }
+
+  const modelHints = new Set<string>();
+  const defaultSubagentModel = params.cfg.agents?.defaults?.subagents?.model;
+  const defaultModel = params.cfg.agents?.defaults?.model;
+  const normalizedDefaultSubagentModel = normalizeModelSelection(defaultSubagentModel);
+  if (normalizedDefaultSubagentModel) {
+    modelHints.add(normalizedDefaultSubagentModel);
+  }
+  const normalizedDefaultModel = normalizeModelSelection(defaultModel);
+  if (normalizedDefaultModel) {
+    modelHints.add(normalizedDefaultModel);
+  }
+
+  for (const agent of params.cfg.agents?.list ?? []) {
+    const normalizedAgentSubagentModel = normalizeModelSelection(agent.subagents?.model);
+    if (normalizedAgentSubagentModel) {
+      modelHints.add(normalizedAgentSubagentModel);
+    }
+    const normalizedAgentModel = normalizeModelSelection(agent.model);
+    if (normalizedAgentModel) {
+      modelHints.add(normalizedAgentModel);
+    }
+  }
+
+  for (const key of Object.keys(params.cfg.agents?.defaults?.models ?? {})) {
+    const parsed = parseModelRef(key, DEFAULT_PROVIDER);
+    if (parsed?.provider === normalizedProvider) {
+      return true;
+    }
+  }
+
+  for (const rawModel of modelHints) {
+    const normalized = normalizeModelSelection(rawModel);
+    if (!normalized) {
+      continue;
+    }
+    const parsed = parseModelRef(normalized, DEFAULT_PROVIDER);
+    if (!parsed) {
+      continue;
+    }
+    if (parsed.provider === normalizedProvider) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeSubagentModelSelection(raw: string, cfg: OpenClawConfig): string {
+  if (!raw.includes(":") || raw.includes("/")) {
+    return raw.trim();
+  }
+  const firstColon = raw.indexOf(":");
+  if (firstColon <= 0 || firstColon === raw.length - 1) {
+    return raw.trim();
+  }
+  const provider = raw.slice(0, firstColon).trim();
+  const model = raw.slice(firstColon + 1).trim();
+  if (!provider || !model) {
+    return raw.trim();
+  }
+  if (
+    isKnownSubagentModelProvider({ cfg, providerRaw: provider }) ||
+    isLikelySubagentProviderModelPair({ provider: provider, model: model })
+  ) {
+    return `${provider}/${model}`;
+  }
+  return raw.trim();
+}
+
+function isLikelySubagentProviderModelPair(params: { provider: string; model: string }): boolean {
+  const normalizedProvider = params.provider.trim().toLowerCase();
+  const normalizedModel = params.model.trim();
+  if (!normalizedProvider || !normalizedModel) {
+    return false;
+  }
+  // Provider tokens are conventionally short identifiers and model names in colon
+  // syntax are not typically version-only tokens.
+  if (!/^[a-z][a-z0-9.-]*$/.test(normalizedProvider)) {
+    return false;
+  }
+  return /^[a-zA-Z]/.test(normalizedModel);
+}
+
+function normalizeSubagentModelSelectionValue(params: {
+  cfg: OpenClawConfig;
+  value: unknown;
+}): string | undefined {
+  const normalized = normalizeModelSelection(params.value);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalizeSubagentModelSelection(normalized, params.cfg);
+}
+
 export function resolveSubagentSpawnModelSelection(params: {
   cfg: OpenClawConfig;
   agentId: string;
@@ -372,12 +474,21 @@ export function resolveSubagentSpawnModelSelection(params: {
     agentId: params.agentId,
   });
   return (
-    normalizeModelSelection(params.modelOverride) ??
-    resolveSubagentConfiguredModelSelection({
+    normalizeSubagentModelSelectionValue({
       cfg: params.cfg,
-      agentId: params.agentId,
+      value: params.modelOverride,
     }) ??
-    normalizeModelSelection(resolveAgentModelPrimaryValue(params.cfg.agents?.defaults?.model)) ??
+    normalizeSubagentModelSelectionValue({
+      cfg: params.cfg,
+      value: resolveSubagentConfiguredModelSelection({
+        cfg: params.cfg,
+        agentId: params.agentId,
+      }),
+    }) ??
+    normalizeSubagentModelSelectionValue({
+      cfg: params.cfg,
+      value: resolveAgentModelPrimaryValue(params.cfg.agents?.defaults?.model),
+    }) ??
     `${runtimeDefault.provider}/${runtimeDefault.model}`
   );
 }
