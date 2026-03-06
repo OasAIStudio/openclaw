@@ -66,6 +66,7 @@ async function expectSpawnUsesConfiguredModel(params: {
   runId: string;
   callId: string;
   expectedModel: string;
+  model?: string;
 }) {
   if (params.config) {
     setSessionsSpawnConfigOverride(params.config);
@@ -82,6 +83,7 @@ async function expectSpawnUsesConfiguredModel(params: {
 
   const result = await tool.execute(params.callId, {
     task: "do thing",
+    ...(params.model ? { model: params.model } : {}),
   });
   expect(result.details).toMatchObject({
     status: "accepted",
@@ -204,6 +206,70 @@ describe("openclaw-tools: subagents (sessions_spawn model + thinking)", () => {
       runId: "run-default-model",
       callId: "call-default-model",
       expectedModel: "minimax/MiniMax-M2.5",
+    });
+  });
+
+  it("sessions_spawn normalizes provider:model model override syntax", async () => {
+    const sharedConfig = {
+      session: { mainKey: "main", scope: "per-sender" },
+      agents: {
+        defaults: {
+          models: {
+            "ollama/llama3.2:3b": {},
+            "gpt4free/gpt-4o": {},
+            "oracle-ollama/llama3.2:3b": {},
+          },
+        },
+      },
+    };
+
+    await expectSpawnUsesConfiguredModel({
+      config: sharedConfig,
+      runId: "run-provider-colon-ollama",
+      callId: "call-provider-colon-ollama",
+      expectedModel: "ollama/llama3.2:3b",
+      model: "ollama:llama3.2:3b",
+    });
+    await expectSpawnUsesConfiguredModel({
+      config: sharedConfig,
+      runId: "run-provider-colon-gpt4free",
+      callId: "call-provider-colon-gpt4free",
+      expectedModel: "gpt4free/gpt-4o",
+      model: "gpt4free:gpt-4o",
+    });
+    await expectSpawnUsesConfiguredModel({
+      config: sharedConfig,
+      runId: "run-provider-colon-oracle",
+      callId: "call-provider-colon-oracle",
+      expectedModel: "oracle-ollama/llama3.2:3b",
+      model: "oracle-ollama:llama3.2:3b",
+    });
+  });
+
+  it("sessions_spawn keeps bare model ids with embedded colons unchanged", async () => {
+    await expectSpawnUsesConfiguredModel({
+      runId: "run-bare-colon-model",
+      callId: "call-bare-colon-model",
+      expectedModel: "llama3.2:3b",
+      model: "llama3.2:3b",
+    });
+  });
+
+  it("sessions_spawn normalizes provider:model model override when provider is not preconfigured", async () => {
+    await expectSpawnUsesConfiguredModel({
+      runId: "run-unconfigured-provider-colon-model",
+      callId: "call-unconfigured-provider-colon-model",
+      expectedModel: "ollama/llama3.2:3b",
+      model: "ollama:llama3.2:3b",
+    });
+  });
+
+  it("sessions_spawn keeps deepseek-chat without provider prefix", async () => {
+    await expectSpawnUsesConfiguredModel({
+      runId: "run-deepseek-chat-legacy",
+      callId: "call-deepseek-chat-legacy",
+      expectedModel: "deepseek-chat",
+      model: "deepseek-chat",
     });
   });
 
