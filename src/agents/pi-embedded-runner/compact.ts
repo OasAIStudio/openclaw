@@ -132,6 +132,10 @@ type CompactionMessageMetrics = {
   contributors: Array<{ role: string; chars: number; tool?: string }>;
 };
 
+function hasRealConversationContent(msg: AgentMessage): boolean {
+  return msg.role === "user" || msg.role === "assistant" || msg.role === "toolResult";
+}
+
 function createCompactionDiagId(): string {
   return `cmp-${Date.now().toString(36)}-${generateSecureToken(4)}`;
 }
@@ -663,6 +667,17 @@ export async function compactEmbeddedPiSessionDirect(
           );
         }
 
+        if (!session.messages.some(hasRealConversationContent)) {
+          log.info(
+            `[compaction] skipping — no real conversation messages (sessionKey=${params.sessionKey ?? params.sessionId})`,
+          );
+          return {
+            ok: true,
+            compacted: false,
+            reason: "no real conversation messages",
+          };
+        }
+
         const compactStartedAt = Date.now();
         const result = await compactWithSafetyTimeout(() =>
           session.compact(params.customInstructions),
@@ -758,7 +773,7 @@ export async function compactEmbeddedPiSession(
   const globalLane = resolveGlobalLane(params.lane);
   const enqueueGlobal =
     params.enqueue ?? ((task, opts) => enqueueCommandInLane(globalLane, task, opts));
-  return enqueueCommandInLane(sessionLane, () =>
-    enqueueGlobal(async () => compactEmbeddedPiSessionDirect(params)),
+  return enqueueGlobal(() =>
+    enqueueCommandInLane(sessionLane, async () => compactEmbeddedPiSessionDirect(params)),
   );
 }
