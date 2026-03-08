@@ -81,6 +81,25 @@ describe("embedding chunk limits", () => {
     expect(out.every((chunk) => estimateUtf8Bytes(chunk.text) <= 2048)).toBe(true);
   });
 
+  it("uses BERT-like local model limits for BGE-family models", () => {
+    const provider = createProviderWithoutMaxInputTokens({
+      id: "local",
+      model: "hf:BAAI/bge-small-zh-v1.5",
+    });
+
+    const out = enforceEmbeddingMaxInputTokens(provider, [
+      {
+        startLine: 1,
+        endLine: 1,
+        text: "x".repeat(700),
+        hash: "ignored",
+      },
+    ]);
+
+    expect(out.length).toBeGreaterThan(1);
+    expect(out.every((chunk) => estimateUtf8Bytes(chunk.text) <= 512)).toBe(true);
+  });
+
   it("honors hard safety caps lower than provider maxInputTokens", () => {
     const provider = createProvider(8192);
     const out = enforceEmbeddingMaxInputTokens(

@@ -13,6 +13,20 @@ const KNOWN_EMBEDDING_MAX_INPUT_TOKENS: Record<string, number> = {
   "voyage:voyage-code-3": 32000,
 };
 
+const KNOWN_LOCAL_EMBEDDING_MAX_INPUT_TOKENS: Array<{ pattern: RegExp; maxInputTokens: number }> = [
+  { pattern: /\bbge[-_]/i, maxInputTokens: 512 },
+];
+
+function normalizeLocalModel(model: string): string {
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/^hf:/, "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .at(-1) ?? model.toLowerCase();
+}
+
 export function resolveEmbeddingMaxInputTokens(provider: EmbeddingProvider): number {
   if (typeof provider.maxInputTokens === "number") {
     return provider.maxInputTokens;
@@ -32,6 +46,12 @@ export function resolveEmbeddingMaxInputTokens(provider: EmbeddingProvider): num
     return 2048;
   }
   if (provider.id.toLowerCase() === "local") {
+    const normalizedModel = normalizeLocalModel(provider.model);
+    for (const rule of KNOWN_LOCAL_EMBEDDING_MAX_INPUT_TOKENS) {
+      if (rule.pattern.test(normalizedModel)) {
+        return rule.maxInputTokens;
+      }
+    }
     return DEFAULT_LOCAL_EMBEDDING_MAX_INPUT_TOKENS;
   }
 
