@@ -206,4 +206,25 @@ describe("deriveSessionTotalTokens", () => {
     });
     expect(totalTokens).toBe(2500);
   });
+
+  it("falls back to total tokens when prompt-shape fields are unavailable", () => {
+    const totalTokens = deriveSessionTotalTokens({
+      usage: {
+        total: 2200,
+      },
+      contextTokens: 4000,
+    });
+    expect(totalTokens).toBe(2200);
+  });
+
+  it("falls back to total minus output when only total and output are available", () => {
+    const totalTokens = deriveSessionTotalTokens({
+      usage: {
+        output: 100,
+        total: 1200,
+      },
+      contextTokens: 4000,
+    });
+    expect(totalTokens).toBe(1100);
+  });
 });

@@ -186,5 +186,20 @@ export function deriveSessionTotalTokens(params: {
 
   // Keep this value unclamped; display layers are responsible for capping
   // percentages for terminal output.
-  return promptTokens;
+  if (typeof promptTokens === "number" && promptTokens > 0) {
+    return promptTokens;
+  }
+
+  const total = usage?.total;
+  if (typeof total !== "number" || !Number.isFinite(total) || total <= 0) {
+    return undefined;
+  }
+
+  // Some providers now emit only `total` counts. Prefer prompt+cache tokens
+  // when present, otherwise approximate from total output subtraction.
+  const output = usage?.output ?? 0;
+  if (Number.isFinite(output) && output > 0 && total > output) {
+    return total - output;
+  }
+  return total;
 }
