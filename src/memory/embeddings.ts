@@ -2,7 +2,9 @@ import fsSync from "node:fs";
 import type { Llama, LlamaEmbeddingContext, LlamaModel } from "node-llama-cpp";
 import type { OpenClawConfig } from "../config/config.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { splitTextToUtf8ByteLimit } from "./embedding-input-limits.js";
 import { resolveUserPath } from "../utils.js";
+import { resolveEmbeddingMaxInputTokens } from "./embedding-model-limits.js";
 import { createGeminiEmbeddingProvider, type GeminiEmbeddingClient } from "./embeddings-gemini.js";
 import {
   createMistralEmbeddingProvider,
@@ -104,6 +106,14 @@ async function createLocalEmbeddingProvider(
 ): Promise<EmbeddingProvider> {
   const modelPath = options.local?.modelPath?.trim() || DEFAULT_LOCAL_MODEL;
   const modelCacheDir = options.local?.modelCacheDir?.trim();
+  const maxInputTokens = resolveEmbeddingMaxInputTokens({
+    id: "local",
+    model: modelPath,
+    // embedBatch/embedQuery are added to satisfy the EmbeddingProvider contract;
+    // these placeholders are never executed in this internal limit resolution path.
+    embedQuery: async () => [],
+    embedBatch: async () => [],
+  });
 
   // Lazy-load node-llama-cpp to keep startup light unless local is enabled.
   const { getLlama, resolveModelFile, LlamaLogLevel } = await importNodeLlamaCpp();
@@ -112,6 +122,7 @@ async function createLocalEmbeddingProvider(
   let embeddingModel: LlamaModel | null = null;
   let embeddingContext: LlamaEmbeddingContext | null = null;
   let initPromise: Promise<LlamaEmbeddingContext> | null = null;
+  let batchQueue: Promise<unknown> = Promise.resolve();
 
   const ensureContext = async (): Promise<LlamaEmbeddingContext> => {
     if (embeddingContext) {
@@ -141,22 +152,67 @@ async function createLocalEmbeddingProvider(
     return initPromise;
   };
 
+  const averageEmbeddings = (vectors: number[][]): number[] => {
+    if (vectors.length === 0) {
+      return [];
+    }
+    const first = vectors[0];
+    if (!first || first.length === 0) {
+      return [];
+    }
+    const sums = new Array(first.length).fill(0);
+    let count = 0;
+    for (const vector of vectors) {
+      const size = Math.min(sums.length, vector.length);
+      for (let i = 0; i < size; i += 1) {
+        const value = Number.isFinite(vector[i] ?? 0) ? (vector[i] ?? 0) : 0;
+        sums[i] += value;
+      }
+      count += 1;
+    }
+    if (count === 0) {
+      return [];
+    }
+    return sanitizeAndNormalizeEmbedding(sums.map((value) => value / count));
+  };
+
+  const withEmbeddingContext = async <T>(
+    getEmbedding: (ctx: LlamaEmbeddingContext) => Promise<T>,
+  ): Promise<T> => {
+    const operation = batchQueue.then(async () => {
+      const ctx = await ensureContext();
+      return await getEmbedding(ctx);
+    });
+    batchQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  };
+
+  const embedSingle = async (text: string): Promise<number[]> => {
+    return withEmbeddingContext(async (ctx) => {
+      const chunks = splitTextToUtf8ByteLimit(text, maxInputTokens);
+      const vectors = [];
+      for (const chunk of chunks) {
+        const embedding = await ctx.getEmbeddingFor(chunk);
+        vectors.push(Array.from(embedding.vector));
+      }
+      return averageEmbeddings(vectors);
+    });
+  };
+
   return {
     id: "local",
     model: modelPath,
     embedQuery: async (text) => {
-      const ctx = await ensureContext();
-      const embedding = await ctx.getEmbeddingFor(text);
-      return sanitizeAndNormalizeEmbedding(Array.from(embedding.vector));
+      return await embedSingle(text);
     },
     embedBatch: async (texts) => {
-      const ctx = await ensureContext();
-      const embeddings = await Promise.all(
-        texts.map(async (text) => {
-          const embedding = await ctx.getEmbeddingFor(text);
-          return sanitizeAndNormalizeEmbedding(Array.from(embedding.vector));
-        }),
-      );
+      const embeddings: number[][] = [];
+      for (const text of texts) {
+        embeddings.push(await embedSingle(text));
+      }
       return embeddings;
     },
   };

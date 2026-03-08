@@ -469,6 +469,84 @@ describe("local embedding normalization", () => {
       expect(magnitude).toBeCloseTo(1.0, 5);
     }
   });
+
+  it("serializes getEmbeddingFor calls for local batch inputs", async () => {
+    let active = 0;
+    let maxActive = 0;
+
+    importNodeLlamaCppMock.mockResolvedValue({
+      getLlama: async () => ({
+        loadModel: vi.fn().mockResolvedValue({
+          createEmbeddingContext: vi.fn().mockResolvedValue({
+            getEmbeddingFor: vi.fn(async () => {
+              active += 1;
+              maxActive = Math.max(maxActive, active);
+              await new Promise((resolve) => setTimeout(resolve, 20));
+              active -= 1;
+              return { vector: new Float32Array([1, 0, 0, 0]) };
+            }),
+          }),
+        }),
+      }),
+      resolveModelFile: async () => "/fake/model.gguf",
+      LlamaLogLevel: { error: 0 },
+    });
+
+    const result = await createLocalProviderForTest();
+    const provider = requireProvider(result);
+
+    const embeddings = await provider.embedBatch(["text-a", "text-b", "text-c", "text-d"]);
+
+    expect(embeddings).toHaveLength(4);
+    expect(maxActive).toBe(1);
+  });
+
+  it("embeds oversized local text as multiple chunks instead of truncation", async () => {
+    const getEmbeddingForMock = vi.fn();
+
+    const text = "x".repeat(700);
+    getEmbeddingForMock
+      .mockResolvedValueOnce({ vector: new Float32Array([1, 0, 0, 0]) })
+      .mockResolvedValueOnce({ vector: new Float32Array([0, 2, 0, 0]) });
+    importNodeLlamaCppMock.mockResolvedValue({
+      getLlama: async () => ({
+        loadModel: vi.fn().mockResolvedValue({
+          createEmbeddingContext: vi.fn().mockResolvedValue({
+            getEmbeddingFor: getEmbeddingForMock,
+          }),
+        }),
+      }),
+      resolveModelFile: async () => "/fake/model.gguf",
+      LlamaLogLevel: { error: 0 },
+    });
+
+    const result = await createEmbeddingProvider({
+      config: {} as never,
+      provider: "local",
+      model: "",
+      fallback: "none",
+      local: {
+        modelPath: "hf:BAAI/bge-small-zh-v1.5",
+      },
+    });
+
+    const provider = requireProvider(result);
+    const embedding = await provider.embedQuery(text);
+
+    expect(getEmbeddingForMock).toHaveBeenCalledTimes(2);
+    expect(getEmbeddingForMock.mock.calls[0]?.[0]?.length).toBeLessThanOrEqual(512);
+    expect(getEmbeddingForMock.mock.calls[1]?.[0]?.length).toBe(188);
+    expect(getEmbeddingForMock.mock.calls).toHaveLength(2);
+
+    const magnitude = Math.sqrt(embedding.reduce((sum, value) => sum + value * value, 0));
+    expect(magnitude).toBeCloseTo(1.0, 5);
+    expect(embedding).toHaveLength(4);
+    // First chunk embeds to [1,0,0,0], second chunk [0,2,0,0], then averaged and normalized.
+    expect(embedding[0]).toBeCloseTo(0.4472136, 5);
+    expect(embedding[1]).toBeCloseTo(0.8944272, 5);
+    expect(embedding[2]).toBeCloseTo(0, 5);
+    expect(embedding[3]).toBeCloseTo(0, 5);
+  });
 });
 
 describe("local embedding ensureContext concurrency", () => {
