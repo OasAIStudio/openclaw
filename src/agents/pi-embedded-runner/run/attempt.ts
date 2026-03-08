@@ -1573,8 +1573,41 @@ export async function runEmbeddedAttempt(
         // Repair orphaned trailing user messages so new prompts don't violate role ordering.
         const leafEntry = sessionManager.getLeafEntry();
         if (leafEntry?.type === "message" && leafEntry.message.role === "user") {
+          let orphanRepairParentId: string | undefined;
+
           if (leafEntry.parentId) {
-            sessionManager.branch(leafEntry.parentId);
+            orphanRepairParentId = leafEntry.parentId;
+          } else {
+            const branch = sessionManager.getBranch();
+            for (let i = branch.length - 1; i >= 0; i -= 1) {
+              const candidate = branch[i];
+              if (!candidate || candidate.type !== "message") {
+                continue;
+              }
+              const role = (candidate as { message?: { role?: string } }).message?.role;
+              if (role === "user") {
+                continue;
+              }
+              const candidateId = (candidate as { id?: string }).id;
+              if (typeof candidateId === "string" && candidateId.length > 0) {
+                orphanRepairParentId = candidateId;
+                break;
+              }
+            }
+          }
+
+          if (orphanRepairParentId) {
+            try {
+              sessionManager.branch(orphanRepairParentId);
+            } catch (branchErr) {
+              log.warn(
+                `Failed to recover orphaned user message parent via branch(); ` +
+                  `falling back to leaf reset. ` +
+                  `runId=${params.runId} sessionId=${params.sessionId} ` +
+                  `parentId=${orphanRepairParentId} error=${String(branchErr)}`,
+              );
+              sessionManager.resetLeaf();
+            }
           } else {
             sessionManager.resetLeaf();
           }
@@ -1582,7 +1615,8 @@ export async function runEmbeddedAttempt(
           activeSession.agent.replaceMessages(sessionContext.messages);
           log.warn(
             `Removed orphaned user message to prevent consecutive user turns. ` +
-              `runId=${params.runId} sessionId=${params.sessionId}`,
+              `runId=${params.runId} sessionId=${params.sessionId} ` +
+              `recoveredParentId=${orphanRepairParentId ?? "none"}`,
           );
         }
 

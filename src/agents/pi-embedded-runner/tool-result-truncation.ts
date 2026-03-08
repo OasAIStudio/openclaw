@@ -249,7 +249,16 @@ export async function truncateOversizedToolResultsInSession(params: {
     // Branch from the parent of the first oversized entry
     const firstOversizedIdx = oversizedIndices[0];
     const firstOversizedEntry = branch[firstOversizedIdx];
-    const branchFromId = firstOversizedEntry.parentId;
+    let branchFromId: string | undefined = firstOversizedEntry.parentId;
+    if (!branchFromId && firstOversizedIdx > 0) {
+      // Parent is usually the previous branch entry; this fallback keeps context
+      // when parent pointers are missing in transcripts.
+      const fallback = branch[firstOversizedIdx - 1];
+      const fallbackId = (fallback as { id?: string }).id;
+      if (typeof fallbackId === "string" && fallbackId.length > 0) {
+        branchFromId = fallbackId;
+      }
+    }
 
     if (!branchFromId) {
       // The oversized entry is the root - very unusual but handle it
