@@ -292,6 +292,38 @@ describe("command queue", () => {
     await expect(first).resolves.toBe("first");
   });
 
+  it("clearCommandLane drops in-flight tracking so new work can run immediately", async () => {
+    const lane = `clear-active-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setCommandLaneConcurrency(lane, 1);
+
+    const firstGate = createDeferred();
+    const first = firstGate.promise;
+    const firstQueued = enqueueCommandInLane(lane, async () => {
+      await first;
+      return "first";
+    });
+    const releaseFirst = firstGate.resolve;
+
+    const second = enqueueCommandInLane(lane, async () => "second");
+    const removed = clearCommandLane(lane);
+    expect(removed).toBe(1);
+
+    let thirdRan = false;
+    const third = enqueueCommandInLane(lane, async () => {
+      thirdRan = true;
+      return "third";
+    });
+
+    await vi.waitFor(() => {
+      expect(thirdRan).toBe(true);
+    });
+
+    releaseFirst();
+    await expect(firstQueued).resolves.toBe("first");
+    await expect(third).resolves.toBe("third");
+    await expect(second).rejects.toBeInstanceOf(CommandLaneClearedError);
+  });
+
   it("keeps draining functional after synchronous onWait failure", async () => {
     const lane = `drain-sync-throw-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setCommandLaneConcurrency(lane, 1);
