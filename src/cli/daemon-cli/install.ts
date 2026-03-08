@@ -7,6 +7,9 @@ import { resolveGatewayInstallToken } from "../../commands/gateway-install-token
 import { loadConfig, resolveGatewayPort } from "../../config/config.js";
 import { resolveIsNixMode } from "../../config/paths.js";
 import { resolveGatewayService } from "../../daemon/service.js";
+import { renderSystemdUnavailableHints } from "../../daemon/systemd-hints.js";
+import { isSystemdUserServiceAvailable } from "../../daemon/systemd.js";
+import { isWSL } from "../../infra/wsl.js";
 import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
 import {
@@ -41,6 +44,15 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
   if (!isGatewayDaemonRuntime(runtimeRaw)) {
     fail('Invalid --runtime (use "node" or "bun")');
     return;
+  }
+
+  if (process.platform === "linux") {
+    const systemdAvailable = await isSystemdUserServiceAvailable().catch(() => false);
+    if (!systemdAvailable) {
+      const hints = renderSystemdUnavailableHints({ wsl: await isWSL() });
+      fail("Gateway install blocked: systemd user services are unavailable.", hints);
+      return;
+    }
   }
 
   const service = resolveGatewayService();

@@ -28,6 +28,11 @@ const buildGatewayInstallPlanMock = vi.hoisted(() =>
 );
 const parsePortMock = vi.hoisted(() => vi.fn(() => null));
 const isGatewayDaemonRuntimeMock = vi.hoisted(() => vi.fn(() => true));
+const isSystemdUserServiceAvailableMock = vi.hoisted(() => vi.fn(async () => true));
+const isWSLMock = vi.hoisted(() => vi.fn(async () => false));
+const renderSystemdUnavailableHintsMock = vi.hoisted(() =>
+  vi.fn(() => ["systemd user services are unavailable."]),
+);
 const installDaemonServiceAndEmitMock = vi.hoisted(() => vi.fn(async () => {}));
 
 const actionState = vi.hoisted(() => ({
@@ -93,6 +98,18 @@ vi.mock("../../daemon/service.js", () => ({
   resolveGatewayService: () => service,
 }));
 
+vi.mock("../../daemon/systemd.js", () => ({
+  isSystemdUserServiceAvailable: isSystemdUserServiceAvailableMock,
+}));
+
+vi.mock("../../daemon/systemd-hints.js", () => ({
+  renderSystemdUnavailableHints: renderSystemdUnavailableHintsMock,
+}));
+
+vi.mock("../../infra/wsl.js", () => ({
+  isWSL: isWSLMock,
+}));
+
 vi.mock("./response.js", () => ({
   buildDaemonServiceSnapshot: vi.fn(),
   createDaemonActionContext: vi.fn(() => ({
@@ -135,6 +152,9 @@ describe("runDaemonInstall", () => {
     isGatewayDaemonRuntimeMock.mockReset();
     installDaemonServiceAndEmitMock.mockReset();
     service.isLoaded.mockReset();
+    isSystemdUserServiceAvailableMock.mockReset();
+    isWSLMock.mockReset();
+    renderSystemdUnavailableHintsMock.mockClear();
     runtimeLogs.length = 0;
     actionState.warnings.length = 0;
     actionState.emitted.length = 0;
@@ -160,9 +180,33 @@ describe("runDaemonInstall", () => {
     });
     parsePortMock.mockReturnValue(null);
     isGatewayDaemonRuntimeMock.mockReturnValue(true);
+    isSystemdUserServiceAvailableMock.mockResolvedValue(true);
+    isWSLMock.mockResolvedValue(false);
+    renderSystemdUnavailableHintsMock.mockReturnValue(["systemd user services are unavailable."]);
     installDaemonServiceAndEmitMock.mockResolvedValue(undefined);
     service.isLoaded.mockResolvedValue(false);
   });
+
+  if (process.platform === "linux") {
+    it("fails install when systemd user services are unavailable", async () => {
+      isSystemdUserServiceAvailableMock.mockResolvedValue(false);
+      renderSystemdUnavailableHintsMock.mockReturnValue([
+        "systemd user services are unavailable; install/enable systemd.",
+      ]);
+
+      await runDaemonInstall({ json: true });
+
+      expect(actionState.failed[0]?.message).toContain(
+        "Gateway install blocked: systemd user services are unavailable.",
+      );
+      expect(actionState.failed[0]?.hints).toEqual([
+        "systemd user services are unavailable; install/enable systemd.",
+      ]);
+      expect(isSystemdUserServiceAvailableMock).toHaveBeenCalledTimes(1);
+      expect(service.isLoaded).not.toHaveBeenCalled();
+      expect(installDaemonServiceAndEmitMock).not.toHaveBeenCalled();
+    });
+  }
 
   it("fails install when token auth requires an unresolved token SecretRef", async () => {
     resolveSecretInputRefMock.mockReturnValue({
