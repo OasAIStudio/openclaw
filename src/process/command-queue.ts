@@ -224,6 +224,12 @@ export function clearCommandLane(lane: string = CommandLane.Main) {
   for (const entry of pending) {
     entry.reject(new CommandLaneClearedError(cleaned));
   }
+
+  if (state.activeTaskIds.size > 0) {
+    state.generation += 1;
+    state.activeTaskIds.clear();
+    state.draining = false;
+  }
   return removed;
 }
 
