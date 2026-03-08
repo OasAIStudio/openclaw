@@ -773,7 +773,7 @@ export async function compactEmbeddedPiSession(
   const globalLane = resolveGlobalLane(params.lane);
   const enqueueGlobal =
     params.enqueue ?? ((task, opts) => enqueueCommandInLane(globalLane, task, opts));
-  return enqueueCommandInLane(sessionLane, () =>
-    enqueueGlobal(async () => compactEmbeddedPiSessionDirect(params)),
+  return enqueueGlobal(() =>
+    enqueueCommandInLane(sessionLane, async () => compactEmbeddedPiSessionDirect(params)),
   );
 }

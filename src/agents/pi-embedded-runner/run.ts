@@ -256,8 +256,8 @@ export async function runEmbeddedPiAgent(
       : "markdown");
   const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
 
-  return enqueueSession(() =>
-    enqueueGlobal(async () => {
+  return enqueueGlobal(() =>
+    enqueueSession(async () => {
       const started = Date.now();
       const workspaceResolution = resolveRunWorkspaceDir({
         workspaceDir: params.workspaceDir,
