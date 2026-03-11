@@ -1456,7 +1456,11 @@ export async function runEmbeddedPiAgent(
             reasoningLevel: params.reasoningLevel,
             toolResultFormat: resolvedToolResultFormat,
             suppressToolErrorWarnings: params.suppressToolErrorWarnings,
-            inlineToolResultsAllowed: false,
+            inlineToolResultsAllowed:
+              !params.onToolResult ||
+              (typeof params.shouldEmitToolResult === "function"
+                ? !params.shouldEmitToolResult()
+                : false),
             didSendViaMessagingTool: attempt.didSendViaMessagingTool,
             didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
           });

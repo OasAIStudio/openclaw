@@ -344,8 +344,10 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
         text: cleanedText,
         mediaUrls: filteredMediaUrls.length ? filteredMediaUrls : undefined,
       });
-    } catch {
-      // ignore tool result delivery failures
+    } catch (err) {
+      log.warn(
+        `tool result delivery failed: runId=${params.runId} tool=${toolName ?? "unknown"} ${String(err)}`,
+      );
     }
   };
   const emitToolSummary = (toolName?: string, meta?: string) => {

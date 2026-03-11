@@ -246,8 +246,10 @@ async function emitToolResultOutput(params: {
         }),
       );
       ctx.state.deterministicApprovalPromptSent = true;
-    } catch {
-      // ignore delivery failures
+    } catch (err) {
+      ctx.log.warn(
+        `tool result delivery failed for approval-pending response: tool=${toolName} runId=${ctx.params.runId} ${String(err)}`,
+      );
     }
     return;
   }
@@ -264,8 +266,10 @@ async function emitToolResultOutput(params: {
         }),
       );
       ctx.state.deterministicApprovalPromptSent = true;
-    } catch {
-      // ignore delivery failures
+    } catch (err) {
+      ctx.log.warn(
+        `tool result delivery failed for approval-unavailable response: tool=${toolName} runId=${ctx.params.runId} ${String(err)}`,
+      );
     }
     return;
   }
@@ -290,8 +294,10 @@ async function emitToolResultOutput(params: {
   }
   try {
     void ctx.params.onToolResult({ mediaUrls: mediaPaths });
-  } catch {
-    // ignore delivery failures
+  } catch (err) {
+    ctx.log.warn(
+      `tool result media delivery failed: tool=${toolName} runId=${ctx.params.runId} ${String(err)}`,
+    );
   }
 }
 
