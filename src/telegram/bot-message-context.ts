@@ -1,5 +1,8 @@
+import path from "node:path";
 import { ensureConfiguredAcpRouteReady } from "../acp/persistent-bindings.route.js";
+import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { resolveAckReaction } from "../agents/identity.js";
+import { resolveEffectiveToolFsWorkspaceOnly } from "../agents/tool-fs-policy.js";
 import { shouldAckReaction as shouldAckReactionGate } from "../channels/ack-reactions.js";
 import { logInboundDrop } from "../channels/logging.js";
 import {
@@ -7,9 +10,11 @@ import {
   type StatusReactionController,
 } from "../channels/status-reactions.js";
 import { loadConfig } from "../config/config.js";
+import type { OpenClawConfig } from "../config/config.js";
 import type { TelegramDirectConfig, TelegramGroupConfig } from "../config/types.js";
 import { logVerbose } from "../globals.js";
 import { recordChannelActivity } from "../infra/channel-activity.js";
+import { copyFileWithinRoot } from "../infra/fs-safe.js";
 import { buildAgentSessionKey, deriveLastRoutePolicy } from "../routing/resolve-route.js";
 import { DEFAULT_ACCOUNT_ID, resolveThreadSessionKeys } from "../routing/session-key.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
@@ -36,6 +41,78 @@ export type {
   BuildTelegramMessageContextParams,
   TelegramMediaRef,
 } from "./bot-message-context.types.js";
+
+type StagedMediaListResult = {
+  allMedia: TelegramMediaRef[];
+  replyMedia: TelegramMediaRef[];
+};
+
+function allocateStagedMediaFileName(fileName: string, usedNames: Set<string>): string {
+  const parsed = path.parse(fileName);
+  let stagedFileName = fileName;
+  let suffix = 1;
+  while (usedNames.has(stagedFileName)) {
+    stagedFileName = `${parsed.name}-${suffix}${parsed.ext}`;
+    suffix += 1;
+  }
+  usedNames.add(stagedFileName);
+  return stagedFileName;
+}
+
+async function stageTelegramInboundMediaForAgentWorkspace(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  allMedia: TelegramMediaRef[];
+  replyMedia: TelegramMediaRef[];
+}): Promise<StagedMediaListResult> {
+  if (!resolveEffectiveToolFsWorkspaceOnly({ cfg: params.cfg, agentId: params.agentId })) {
+    return { allMedia: params.allMedia, replyMedia: params.replyMedia };
+  }
+
+  const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.agentId);
+  if (!workspaceDir) {
+    return { allMedia: params.allMedia, replyMedia: params.replyMedia };
+  }
+
+  const usedNames = new Set<string>();
+  const stageMediaList = async (mediaList: TelegramMediaRef[]): Promise<TelegramMediaRef[]> => {
+    const result: TelegramMediaRef[] = [];
+    for (const media of mediaList) {
+      if (!path.isAbsolute(media.path)) {
+        result.push(media);
+        continue;
+      }
+      const fileName = path.basename(media.path);
+      if (!fileName) {
+        result.push(media);
+        continue;
+      }
+      const stagedFileName = allocateStagedMediaFileName(fileName, usedNames);
+      const stagedRelativePath = path.posix.join("media", "inbound", stagedFileName);
+      try {
+        await copyFileWithinRoot({
+          sourcePath: media.path,
+          rootDir: workspaceDir,
+          relativePath: stagedRelativePath,
+        });
+        result.push({
+          ...media,
+          path: stagedRelativePath,
+        });
+      } catch (err) {
+        logVerbose(
+          `Failed to stage Telegram inbound media into workspace "${workspaceDir}": ${String(err)}`,
+        );
+        result.push(media);
+      }
+    }
+    return result;
+  };
+
+  const nextAllMedia = await stageMediaList(params.allMedia);
+  const nextReplyMedia = await stageMediaList(params.replyMedia);
+  return { allMedia: nextAllMedia, replyMedia: nextReplyMedia };
+}
 
 export const buildTelegramMessageContext = async ({
   primaryCtx,
@@ -275,11 +352,20 @@ export const buildTelegramMessageContext = async ({
     direction: "inbound",
   });
 
+  const { allMedia: stagedAllMedia, replyMedia: stagedReplyMedia } =
+    await stageTelegramInboundMediaForAgentWorkspace({
+      cfg: freshCfg,
+      agentId: route.agentId,
+      allMedia,
+      replyMedia,
+    });
+
   const bodyResult = await resolveTelegramInboundBody({
     cfg,
     primaryCtx,
     msg,
-    allMedia,
+    allMedia: stagedAllMedia,
+    replyMedia: stagedReplyMedia,
     isGroup,
     chatId,
     senderId,
@@ -417,8 +503,8 @@ export const buildTelegramMessageContext = async ({
     cfg,
     primaryCtx,
     msg,
-    allMedia,
-    replyMedia,
+    allMedia: stagedAllMedia,
+    replyMedia: stagedReplyMedia,
     isGroup,
     isForum,
     chatId,
