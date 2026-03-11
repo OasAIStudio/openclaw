@@ -11,7 +11,10 @@ import {
 } from "../../plugins/bundled-sources.js";
 import { clearPluginDiscoveryCache } from "../../plugins/discovery.js";
 import { enablePluginInConfig } from "../../plugins/enable.js";
-import { installPluginFromNpmSpec } from "../../plugins/install.js";
+import {
+  ensurePluginDependenciesInstalled,
+  installPluginFromNpmSpec,
+} from "../../plugins/install.js";
 import { buildNpmResolutionInstallFields, recordPluginInstall } from "../../plugins/installs.js";
 import { loadOpenClawPlugins } from "../../plugins/loader.js";
 import { createPluginLoaderLogger } from "../../plugins/logger.js";
@@ -173,6 +176,19 @@ export async function ensureOnboardingPluginInstalled(params: {
   }
 
   if (choice === "local" && localPath) {
+    const installDepsResult = await ensurePluginDependenciesInstalled({
+      packageDir: localPath,
+      logger: {
+        info: (message) => runtime.log?.(message),
+      },
+    });
+    if (!installDepsResult.ok) {
+      runtime.error?.(
+        `Failed to prepare ${entry.id} plugin dependencies: ${installDepsResult.error}`,
+      );
+      return { cfg: next, installed: false };
+    }
+
     next = addPluginLoadPath(next, localPath);
     next = enablePluginInConfig(next, entry.id).config;
     return { cfg: next, installed: true };
@@ -210,6 +226,19 @@ export async function ensureOnboardingPluginInstalled(params: {
       initialValue: true,
     });
     if (fallback) {
+      const installDepsResult = await ensurePluginDependenciesInstalled({
+        packageDir: localPath,
+        logger: {
+          info: (message) => runtime.log?.(message),
+        },
+      });
+      if (!installDepsResult.ok) {
+        runtime.error?.(
+          `Failed to prepare ${entry.id} plugin dependencies: ${installDepsResult.error}`,
+        );
+        return { cfg: next, installed: false };
+      }
+
       next = addPluginLoadPath(next, localPath);
       next = enablePluginInConfig(next, entry.id).config;
       return { cfg: next, installed: true };

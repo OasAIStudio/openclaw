@@ -8,7 +8,11 @@ import { resolveStateDir } from "../config/paths.js";
 import { resolveArchiveKind } from "../infra/archive.js";
 import { type BundledPluginSource, findBundledPluginSource } from "../plugins/bundled-sources.js";
 import { enablePluginInConfig } from "../plugins/enable.js";
-import { installPluginFromNpmSpec, installPluginFromPath } from "../plugins/install.js";
+import {
+  ensurePluginDependenciesInstalled,
+  installPluginFromNpmSpec,
+  installPluginFromPath,
+} from "../plugins/install.js";
 import { recordPluginInstall } from "../plugins/installs.js";
 import { clearPluginManifestRegistryCache } from "../plugins/manifest-registry.js";
 import type { PluginRecord } from "../plugins/registry.js";
@@ -159,6 +163,17 @@ async function installBundledPluginSource(params: {
   bundledSource: BundledPluginSource;
   warning: string;
 }) {
+  const depsResult = await ensurePluginDependenciesInstalled({
+    packageDir: params.bundledSource.localPath,
+    logger: createPluginInstallLogger(),
+  });
+  if (!depsResult.ok) {
+    defaultRuntime.error(
+      `Failed to install dependencies for bundled plugin ${params.bundledSource.pluginId}: ${depsResult.error}`,
+    );
+    process.exit(1);
+  }
+
   const existing = params.config.plugins?.load?.paths ?? [];
   const mergedPaths = Array.from(new Set([...existing, params.bundledSource.localPath]));
   let next: OpenClawConfig = {

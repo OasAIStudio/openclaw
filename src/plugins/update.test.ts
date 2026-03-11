@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const installPluginFromNpmSpecMock = vi.fn();
 const resolveBundledPluginSourcesMock = vi.fn();
+const ensurePluginDependenciesInstalledMock = vi.fn();
 
 vi.mock("./install.js", () => ({
   installPluginFromNpmSpec: (...args: unknown[]) => installPluginFromNpmSpecMock(...args),
+  ensurePluginDependenciesInstalled: (...args: unknown[]) =>
+    ensurePluginDependenciesInstalledMock(...args),
   resolvePluginInstallDir: (pluginId: string) => `/tmp/${pluginId}`,
   PLUGIN_INSTALL_ERROR_CODE: {
     NPM_PACKAGE_NOT_FOUND: "npm_package_not_found",
@@ -19,6 +22,8 @@ describe("updateNpmInstalledPlugins", () => {
   beforeEach(() => {
     installPluginFromNpmSpecMock.mockReset();
     resolveBundledPluginSourcesMock.mockReset();
+    ensurePluginDependenciesInstalledMock.mockReset();
+    ensurePluginDependenciesInstalledMock.mockResolvedValue({ ok: true });
   });
 
   it("skips integrity drift checks for unpinned npm specs during dry-run updates", async () => {
@@ -162,6 +167,8 @@ describe("syncPluginsForUpdateChannel", () => {
   beforeEach(() => {
     installPluginFromNpmSpecMock.mockReset();
     resolveBundledPluginSourcesMock.mockReset();
+    ensurePluginDependenciesInstalledMock.mockReset();
+    ensurePluginDependenciesInstalledMock.mockResolvedValue({ ok: true });
   });
 
   it("keeps bundled path installs on beta without reinstalling from npm", async () => {
@@ -244,5 +251,44 @@ describe("syncPluginsForUpdateChannel", () => {
       spec: "@openclaw/feishu",
     });
     expect(installPluginFromNpmSpecMock).not.toHaveBeenCalled();
+  });
+
+  it("rebuilds bundled plugin dependencies while syncing to bundled path", async () => {
+    resolveBundledPluginSourcesMock.mockReturnValue(
+      new Map([
+        [
+          "feishu",
+          {
+            pluginId: "feishu",
+            localPath: "/app/extensions/feishu",
+            npmSpec: "@openclaw/feishu",
+          },
+        ],
+      ]),
+    );
+
+    const { syncPluginsForUpdateChannel } = await import("./update.js");
+    await syncPluginsForUpdateChannel({
+      channel: "dev",
+      config: {
+        plugins: {
+          load: { paths: ["/app/extensions/feishu"] },
+          installs: {
+            feishu: {
+              source: "path",
+              sourcePath: "/app/extensions/feishu",
+              installPath: "/app/extensions/feishu",
+              spec: "@openclaw/feishu",
+            },
+          },
+        },
+      },
+    });
+
+    expect(ensurePluginDependenciesInstalledMock).toHaveBeenCalledWith({
+      packageDir: "/app/extensions/feishu",
+      logger: undefined,
+      mode: "update",
+    });
   });
 });

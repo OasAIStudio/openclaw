@@ -15,8 +15,11 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const installPluginFromNpmSpec = vi.fn();
+const ensurePluginDependenciesInstalled = vi.fn();
 vi.mock("../../plugins/install.js", () => ({
   installPluginFromNpmSpec: (...args: unknown[]) => installPluginFromNpmSpec(...args),
+  ensurePluginDependenciesInstalled: (...args: unknown[]) =>
+    ensurePluginDependenciesInstalled(...args),
 }));
 
 const resolveBundledPluginSources = vi.fn();
@@ -84,6 +87,7 @@ const baseEntry: ChannelPluginCatalogEntry = {
 beforeEach(() => {
   vi.clearAllMocks();
   resolveBundledPluginSources.mockReturnValue(new Map());
+  ensurePluginDependenciesInstalled.mockResolvedValue({ ok: true });
 });
 
 function mockRepoLocalPathExists() {

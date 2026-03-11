@@ -8,6 +8,7 @@ import { resolveBundledPluginSources } from "./bundled-sources.js";
 import {
   installPluginFromNpmSpec,
   PLUGIN_INSTALL_ERROR_CODE,
+  ensurePluginDependenciesInstalled,
   type InstallPluginResult,
   resolvePluginInstallDir,
 } from "./install.js";
@@ -414,6 +415,18 @@ export async function syncPluginsForUpdateChannel(params: {
   const loadHelpers = buildLoadPathHelpers(next.plugins?.load?.paths ?? []);
   const installs = next.plugins?.installs ?? {};
   let changed = false;
+  const ensureDependencies = async (pluginId: string, packageDir: string) => {
+    const depsResult = await ensurePluginDependenciesInstalled({
+      packageDir,
+      logger: params.logger,
+      mode: "update",
+    });
+    if (!depsResult.ok) {
+      summary.errors.push(
+        `Failed to install dependencies for bundled plugin "${pluginId}" in ${packageDir}: ${depsResult.error}`,
+      );
+    }
+  };
 
   if (params.channel === "dev") {
     for (const [pluginId, record] of Object.entries(installs)) {
@@ -427,6 +440,7 @@ export async function syncPluginsForUpdateChannel(params: {
       const alreadyBundled =
         record.source === "path" && pathsEqual(record.sourcePath, bundledInfo.localPath);
       if (alreadyBundled) {
+        await ensureDependencies(pluginId, bundledInfo.localPath);
         continue;
       }
 
@@ -438,6 +452,7 @@ export async function syncPluginsForUpdateChannel(params: {
         spec: record.spec ?? bundledInfo.npmSpec,
         version: record.version,
       });
+      await ensureDependencies(pluginId, bundledInfo.localPath);
       summary.switchedToBundled.push(pluginId);
       changed = true;
     }
@@ -467,6 +482,7 @@ export async function syncPluginsForUpdateChannel(params: {
         pathsEqual(record.sourcePath, bundledInfo.localPath) &&
         pathsEqual(record.installPath, bundledInfo.localPath);
       if (alreadyBundled) {
+        await ensureDependencies(pluginId, bundledInfo.localPath);
         continue;
       }
 
@@ -478,6 +494,7 @@ export async function syncPluginsForUpdateChannel(params: {
         spec: record.spec ?? bundledInfo.npmSpec,
         version: record.version,
       });
+      await ensureDependencies(pluginId, bundledInfo.localPath);
       changed = true;
     }
   }
