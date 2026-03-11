@@ -326,6 +326,30 @@ describe("model compat config schema", () => {
 
     expect(res.ok).toBe(true);
   });
+
+  it("accepts anthropic compat fields for kimi-coding", () => {
+    const res = validateConfigObject({
+      models: {
+        providers: {
+          "kimi-coding": {
+            baseUrl: "https://api.kimi.com/coding/",
+            api: "anthropic-messages",
+            models: [
+              {
+                id: "k2p5",
+                name: "Kimi for Coding",
+                compat: {
+                  requiresOpenAiAnthropicToolPayload: false,
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
 });
 
 describe("config paths", () => {
