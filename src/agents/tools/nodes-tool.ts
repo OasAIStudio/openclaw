@@ -21,7 +21,8 @@ import { parsePreparedSystemRunPayload } from "../../infra/system-run-approval-c
 import { formatExecCommand } from "../../infra/system-run-command.js";
 import { imageMimeFromFormat } from "../../media/mime.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
-import { resolveSessionAgentId } from "../agent-scope.js";
+import { resolveAgentConfig, resolveSessionAgentId } from "../agent-scope.js";
+import { normalizeExecAsk, normalizeExecSecurity } from "../bash-tools.exec-runtime.js";
 import { resolveImageSanitizationLimits } from "../image-sanitization.js";
 import { optionalStringEnum, stringEnum } from "../schema/typebox.js";
 import { sanitizeToolResultImages } from "../tool-images.js";
@@ -172,6 +173,16 @@ export function createNodesTool(options?: {
     sessionKey: options?.agentSessionKey,
     config: options?.config,
   });
+  const nodeExecDefaults = (() => {
+    const agentTools = resolveAgentConfig(options?.config ?? {}, agentId)?.tools;
+    const globalTools = options?.config?.tools;
+    return {
+      security:
+        normalizeExecSecurity(agentTools?.exec?.security ?? globalTools?.exec?.security) ??
+        "allowlist",
+      ask: normalizeExecAsk(agentTools?.exec?.ask ?? globalTools?.exec?.ask) ?? "on-miss",
+    };
+  })();
   const imageSanitization = resolveImageSanitizationLimits(options?.config);
   return {
     label: "Nodes",
@@ -669,6 +680,8 @@ export function createNodesTool(options?: {
               rawCommand: prepared.plan.rawCommand ?? prepared.cmdText,
               cwd: prepared.plan.cwd ?? cwd,
               env,
+              security: nodeExecDefaults.security,
+              ask: nodeExecDefaults.ask,
               timeoutMs: commandTimeoutMs,
               needsScreenRecording,
               agentId: prepared.plan.agentId ?? agentId,
@@ -742,6 +755,8 @@ export function createNodesTool(options?: {
                 runId: approvalId,
                 approved: true,
                 approvalDecision,
+                security: nodeExecDefaults.security,
+                ask: nodeExecDefaults.ask,
               },
               timeoutMs: invokeTimeoutMs,
               idempotencyKey: crypto.randomUUID(),
