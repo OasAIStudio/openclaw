@@ -53,6 +53,53 @@ function compactSkillPaths(skills: Skill[]): Skill[] {
   }));
 }
 
+function rewriteManagedSkillLocationForWorkspace(params: {
+  location: string;
+  workspaceDir: string;
+}): string | undefined {
+  const workspaceSkillsDir = path.resolve(params.workspaceDir, "skills");
+  const managedSkillsDir = path.resolve(CONFIG_DIR, "skills");
+  const raw = params.location.trim();
+  const expanded =
+    raw === "~" ? os.homedir() : raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
+  const normalized = path.resolve(expanded);
+  if (!isPathInside(managedSkillsDir, normalized)) {
+    return undefined;
+  }
+  const relativeFromManaged = path.relative(managedSkillsDir, normalized);
+  if (
+    !relativeFromManaged ||
+    relativeFromManaged.startsWith("..") ||
+    path.isAbsolute(relativeFromManaged)
+  ) {
+    return undefined;
+  }
+  const candidate = path.resolve(workspaceSkillsDir, relativeFromManaged);
+  try {
+    fs.accessSync(candidate);
+  } catch {
+    return undefined;
+  }
+  return path.join("skills", relativeFromManaged).replaceAll("\\", "/");
+}
+
+function rewriteSkillsPromptLocations(params: { prompt: string; workspaceDir: string }): string {
+  const locationRewriter = (match: string, location: string) => {
+    if (!params.workspaceDir) {
+      return match;
+    }
+    const updated = rewriteManagedSkillLocationForWorkspace({
+      location,
+      workspaceDir: params.workspaceDir,
+    });
+    if (!updated) {
+      return match;
+    }
+    return `<location>${updated}</location>`;
+  };
+  return params.prompt.replace(/<location>([^<]+)<\/location>/g, locationRewriter);
+}
+
 function debugSkillCommandOnce(
   messageKey: string,
   message: string,
@@ -645,7 +692,11 @@ export function resolveSkillsPromptForRun(params: {
 }): string {
   const snapshotPrompt = params.skillsSnapshot?.prompt?.trim();
   if (snapshotPrompt) {
-    return snapshotPrompt;
+    const rewrittenPrompt = rewriteSkillsPromptLocations({
+      prompt: snapshotPrompt,
+      workspaceDir: params.workspaceDir,
+    });
+    return rewrittenPrompt;
   }
   if (params.entries && params.entries.length > 0) {
     const prompt = buildWorkspaceSkillsPrompt(params.workspaceDir, {
