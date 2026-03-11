@@ -199,6 +199,8 @@ export async function executeNodeHostCommand(
         cwd: runCwd,
         env: nodeEnv,
         timeoutMs: typeof params.timeoutSec === "number" ? params.timeoutSec * 1000 : undefined,
+        security: hostSecurity,
+        ask: hostAsk,
         agentId: runAgentId,
         sessionKey: runSessionKey,
         approved: approvedByAsk,

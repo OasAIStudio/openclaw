@@ -78,6 +78,28 @@ describe("sanitizeSystemRunParamsForForwarding", () => {
     expect(params.approvalDecision).toBe("allow-once");
   }
 
+  test("preserves system.run security and ask fields for forwarding", () => {
+    const result = sanitizeSystemRunParamsForForwarding({
+      rawParams: {
+        command: ["echo", "SAFE"],
+        rawCommand: "echo SAFE",
+        security: "full",
+        ask: "off",
+      },
+      nodeId: "node-1",
+      client,
+      execApprovalManager: manager(makeRecord("echo SAFE")),
+      nowMs: now,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("unreachable");
+    }
+    const params = result.params as Record<string, unknown>;
+    expect(params.security).toBe("full");
+    expect(params.ask).toBe("off");
+  });
+
   function expectRejectedForwardingResult(
     result: ReturnType<typeof sanitizeSystemRunParamsForForwarding>,
     code: string,

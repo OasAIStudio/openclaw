@@ -7,6 +7,8 @@ import {
   recordAllowlistUse,
   resolveAllowAlwaysPatterns,
   resolveExecApprovals,
+  maxAsk,
+  minSecurity,
   type ExecAllowlistEntry,
   type ExecAsk,
   type ExecCommandSegment,
@@ -74,6 +76,8 @@ type SystemRunParsePhase = {
   timeoutMs: number | undefined;
   needsScreenRecording: boolean;
   approved: boolean;
+  security?: string;
+  ask?: string;
 };
 
 type SystemRunPolicyPhase = SystemRunParsePhase & {
@@ -219,6 +223,8 @@ async function parseSystemRunPhase(
     timeoutMs: opts.params.timeoutMs ?? undefined,
     needsScreenRecording: opts.params.needsScreenRecording === true,
     approved: opts.params.approved === true,
+    security: typeof opts.params.security === "string" ? opts.params.security : undefined,
+    ask: typeof opts.params.ask === "string" ? opts.params.ask : undefined,
   };
 }
 
@@ -234,12 +240,20 @@ async function evaluateSystemRunPolicyPhase(
     agentExec?.security ?? cfg.tools?.exec?.security,
   );
   const configuredAsk = opts.resolveExecAsk(agentExec?.ask ?? cfg.tools?.exec?.ask);
+  const requestedSecurity =
+    typeof parsed.security === "string"
+      ? opts.resolveExecSecurity(parsed.security)
+      : configuredSecurity;
+  const requestedAsk =
+    typeof parsed.ask === "string" ? opts.resolveExecAsk(parsed.ask) : configuredAsk;
+  const policySecurity = minSecurity(configuredSecurity, requestedSecurity);
+  const policyAsk = maxAsk(configuredAsk, requestedAsk);
   const approvals = resolveExecApprovals(parsed.agentId, {
-    security: configuredSecurity,
-    ask: configuredAsk,
+    security: policySecurity,
+    ask: policyAsk,
   });
-  const security = approvals.agent.security;
-  const ask = approvals.agent.ask;
+  const security = minSecurity(approvals.agent.security, policySecurity);
+  const ask = maxAsk(approvals.agent.ask, policyAsk);
   const autoAllowSkills = approvals.agent.autoAllowSkills;
   const { safeBins, safeBinProfiles, trustedSafeBinDirs } = resolveExecSafeBinRuntimePolicy({
     global: cfg.tools?.exec,

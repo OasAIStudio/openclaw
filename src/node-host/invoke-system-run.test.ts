@@ -330,6 +330,40 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
   });
 
+  it("executes directly when system.run security/ask are full/off", async () => {
+    const sendNodeEvent = vi.fn(async () => {});
+    const sendInvokeResult = vi.fn(async () => {});
+    const sendExecFinishedEvent = vi.fn(async () => {});
+    const runCommand = vi.fn(async () => createLocalRunResult());
+    await handleSystemRunInvoke({
+      client: {} as never,
+      params: {
+        command: ["echo", "ok"],
+        security: "full",
+        ask: "off",
+        sessionKey: "agent:main:main",
+      },
+      skillBins: { current: async () => [] },
+      execHostEnforced: false,
+      execHostFallbackAllowed: true,
+      resolveExecSecurity: () => "full",
+      resolveExecAsk: () => "off",
+      isCmdExeInvocation: () => false,
+      sanitizeEnv: () => undefined,
+      runCommand,
+      runViaMacAppExecHost: vi.fn(async () => null),
+      sendNodeEvent,
+      buildExecEventPayload: (payload) => payload,
+      sendInvokeResult,
+      sendExecFinishedEvent,
+      preferMacAppExecHost: false,
+    });
+
+    expect(sendNodeEvent).not.toHaveBeenCalled();
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expectInvokeOk(sendInvokeResult, { payloadContains: "local-ok" });
+  });
+
   it("uses mac app exec host when explicitly preferred", async () => {
     const { runCommand, runViaMacAppExecHost, sendInvokeResult } = await runSystemInvoke({
       preferMacAppExecHost: true,

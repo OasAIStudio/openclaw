@@ -13,6 +13,8 @@ import {
 type SystemRunParamsLike = {
   command?: unknown;
   rawCommand?: unknown;
+  security?: unknown;
+  ask?: unknown;
   cwd?: unknown;
   env?: unknown;
   timeoutMs?: unknown;
@@ -69,6 +71,8 @@ function pickSystemRunParams(raw: Record<string, unknown>): Record<string, unkno
   for (const key of [
     "command",
     "rawCommand",
+    "security",
+    "ask",
     "cwd",
     "env",
     "timeoutMs",
