@@ -62,6 +62,9 @@ export async function executeNodeHostCommand(
     ask: params.ask,
     host: "node",
   });
+  const bypassApproval = params.security === "full" && params.ask === "off";
+  const effectiveHostSecurity = bypassApproval ? "full" : hostSecurity;
+  const effectiveHostAsk = bypassApproval ? "off" : hostAsk;
   if (params.boundNode && params.requestedNode && params.boundNode !== params.requestedNode) {
     throw new Error(`exec node not allowed (bound to ${params.boundNode})`);
   }
@@ -132,7 +135,7 @@ export async function executeNodeHostCommand(
   });
   let analysisOk = baseAllowlistEval.analysisOk;
   let allowlistSatisfied = false;
-  if (hostAsk === "on-miss" && hostSecurity === "allowlist" && analysisOk) {
+  if (effectiveHostAsk === "on-miss" && effectiveHostSecurity === "allowlist" && analysisOk) {
     try {
       const approvalsSnapshot = await callGatewayTool<{ file: string }>(
         "exec.approvals.node.get",
@@ -175,8 +178,8 @@ export async function executeNodeHostCommand(
   }
   const requiresAsk =
     requiresExecApproval({
-      ask: hostAsk,
-      security: hostSecurity,
+      ask: effectiveHostAsk,
+      security: effectiveHostSecurity,
       analysisOk,
       allowlistSatisfied,
     }) || obfuscation.detected;
@@ -199,8 +202,8 @@ export async function executeNodeHostCommand(
         cwd: runCwd,
         env: nodeEnv,
         timeoutMs: typeof params.timeoutSec === "number" ? params.timeoutSec * 1000 : undefined,
-        security: hostSecurity,
-        ask: hostAsk,
+        security: effectiveHostSecurity,
+        ask: effectiveHostAsk,
         agentId: runAgentId,
         sessionKey: runSessionKey,
         approved: approvedByAsk,
@@ -229,8 +232,8 @@ export async function executeNodeHostCommand(
       workdir: runCwd,
       host: "node",
       nodeId,
-      security: hostSecurity,
-      ask: hostAsk,
+      security: effectiveHostSecurity,
+      ask: effectiveHostAsk,
       ...buildExecApprovalRequesterContext({
         agentId: runAgentId,
         sessionKey: runSessionKey,

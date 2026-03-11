@@ -168,6 +168,44 @@ describe("exec approvals", () => {
     expect(calls).not.toContain("exec.approval.request");
   });
 
+  it("executes node command directly when security=full and ask=off", async () => {
+    let systemRunParams: unknown;
+
+    vi.mocked(callGatewayTool).mockImplementation(async (method, _opts, params) => {
+      if (method === "node.invoke") {
+        const invoke = params as { command?: string };
+        if (invoke.command === "system.run.prepare") {
+          return buildPreparedSystemRunPayload(params);
+        }
+        if (invoke.command === "system.run") {
+          systemRunParams = params;
+          return { payload: { success: true, stdout: "ok" } };
+        }
+      }
+      return { ok: true };
+    });
+
+    const tool = createExecTool({
+      host: "node",
+      security: "full",
+      ask: "off",
+      approvalRunningNoticeMs: 0,
+    });
+
+    const result = await tool.execute("call7", { command: "echo ok" });
+    expect(result.details.status).toBe("completed");
+    expect(result.details).not.toMatchObject({ status: "approval-pending" });
+    const calls = vi.mocked(callGatewayTool).mock.calls.map((call) => call[0]);
+    expect(calls).not.toContain("exec.approval.request");
+    expect(calls).toContain("node.invoke");
+    expect(systemRunParams).toMatchObject({
+      params: expect.objectContaining({
+        security: "full",
+        ask: "off",
+      }),
+    });
+  });
+
   it("honors ask=off for elevated gateway exec without prompting", async () => {
     const calls: string[] = [];
     vi.mocked(callGatewayTool).mockImplementation(async (method) => {
