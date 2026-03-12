@@ -703,6 +703,37 @@ describe("agent event handler", () => {
     expect(nodeSendToSession).not.toHaveBeenCalled();
   });
 
+  it("emits chat final for control-linked runs even when control UI visibility is false", () => {
+    const { broadcast, nodeSendToSession, chatRunState, handler, nowSpy } = createHarness({
+      now: 4_500,
+    });
+    chatRunState.registry.add("run-mapped", {
+      sessionKey: "session-mapped",
+      clientRunId: "client-mapped",
+    });
+    registerAgentRunContext("run-mapped", {
+      sessionKey: "session-mapped",
+      verboseLevel: "off",
+      isControlUiVisible: false,
+    });
+
+    handler({
+      runId: "run-mapped",
+      seq: 1,
+      stream: "assistant",
+      ts: Date.now(),
+      data: { text: "Tool cleaned up" },
+    });
+    emitLifecycleEnd(handler, "run-mapped", 2);
+
+    const payload = expectSingleFinalChatPayload(broadcast) as {
+      message?: { content?: Array<{ text?: string }> };
+    };
+    expect(payload.message?.content?.[0]?.text).toBe("Tool cleaned up");
+    expect(nodeSendToSession).toHaveBeenCalled();
+    nowSpy?.mockRestore();
+  });
+
   it("uses agent event sessionKey when run-context lookup cannot resolve", () => {
     const { broadcast, handler } = createHarness({
       resolveSessionKeyForRun: () => undefined,
