@@ -537,6 +537,24 @@ describe("buildAssistantMessageFromResponse", () => {
     expect(textBlock.text).toBe("Hello from assistant");
   });
 
+  it("handles non-array message content without throwing", () => {
+    const response = makeResponseObject("resp_non_array", "Hello from assistant");
+    (response.output[0] as { content?: unknown }).content = { text: "Fallback content" } as never;
+    const msg = buildAssistantMessageFromResponse(response, modelInfo);
+    expect(msg.content).toHaveLength(1);
+    const textBlock = msg.content[0] as { type: string; text: string };
+    expect(textBlock.type).toBe("text");
+    expect(textBlock.text).toBe("Fallback content");
+  });
+
+  it("handles malformed output payloads gracefully", () => {
+    const response = makeResponseObject("resp_malformed_output");
+    (response as { output?: unknown }).output = { type: "message", content: [{ type: "output_text", text: "No iterate" }] } as never;
+    const msg = buildAssistantMessageFromResponse(response, modelInfo);
+    expect(msg.content).toEqual([]);
+    expect(msg.stopReason).toBe("stop");
+  });
+
   it("sets stopReason to 'stop' for text-only responses", () => {
     const response = makeResponseObject("resp_1", "Just text");
     const msg = buildAssistantMessageFromResponse(response, modelInfo);
