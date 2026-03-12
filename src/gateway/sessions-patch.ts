@@ -19,7 +19,6 @@ import {
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import {
-  isAcpSessionKey,
   isSubagentSessionKey,
   normalizeAgentId,
   parseAgentSessionKey,
@@ -64,7 +63,12 @@ function normalizeExecAsk(raw: string): "off" | "on-miss" | "always" | undefined
 }
 
 function supportsSpawnLineage(storeKey: string): boolean {
-  return isSubagentSessionKey(storeKey) || isAcpSessionKey(storeKey);
+  if (isSubagentSessionKey(storeKey)) {
+    return true;
+  }
+  const parsed = parseAgentSessionKey(storeKey);
+  const marker = (parsed?.rest ?? storeKey).trim().toLowerCase();
+  return marker === "acp" || marker.startsWith("acp:");
 }
 
 function normalizeSubagentRole(raw: string): "orchestrator" | "leaf" | undefined {

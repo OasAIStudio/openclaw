@@ -265,6 +265,19 @@ describe("gateway sessions patch", () => {
     expect(entry.spawnedBy).toBe("agent:main:main");
   });
 
+  test("sets spawnedBy for bare acp-key sessions", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        storeKey: "acp:main:child",
+        patch: {
+          key: "acp:main:child",
+          spawnedBy: "agent:main:main",
+        },
+      }),
+    );
+    expect(entry.spawnedBy).toBe("agent:main:main");
+  });
+
   test("sets spawnDepth for ACP sessions", async () => {
     const entry = expectPatchOk(
       await runPatch({
