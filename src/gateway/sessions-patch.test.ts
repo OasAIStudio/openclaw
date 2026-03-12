@@ -265,6 +265,19 @@ describe("gateway sessions patch", () => {
     expect(entry.spawnedBy).toBe("agent:main:main");
   });
 
+  test("sets spawnedBy for legacy ACP sessions using -acp agent-id marker", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        storeKey: "agent:qwen-acp:child",
+        patch: {
+          key: "agent:qwen-acp:child",
+          spawnedBy: "agent:qwen:main",
+        },
+      }),
+    );
+    expect(entry.spawnedBy).toBe("agent:qwen:main");
+  });
+
   test("sets spawnedBy for bare acp-key sessions", async () => {
     const entry = expectPatchOk(
       await runPatch({

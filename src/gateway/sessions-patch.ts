@@ -67,6 +67,9 @@ function supportsSpawnLineage(storeKey: string): boolean {
     return true;
   }
   const parsed = parseAgentSessionKey(storeKey);
+  if ((parsed?.agentId ?? "").toLowerCase().endsWith("-acp")) {
+    return true;
+  }
   const marker = (parsed?.rest ?? storeKey).trim().toLowerCase();
   return marker === "acp" || marker.startsWith("acp:");
 }
