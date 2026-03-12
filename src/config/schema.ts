@@ -51,6 +51,7 @@ const LOOKUP_SCHEMA_BOOLEAN_KEYS = new Set([
   "readOnly",
   "writeOnly",
 ]);
+const PLUGIN_ENTRY_RESERVED_KEYS = new Set(["enabled", "hooks", "config"]);
 const MAX_LOOKUP_PATH_SEGMENTS = 32;
 
 function cloneSchema<T>(value: T): T {
@@ -299,6 +300,7 @@ function applyPluginSchemas(schema: ConfigSchema, plugins: PluginUiMetadata[]): 
     if (!plugin.configSchema) {
       continue;
     }
+
     const entrySchema = entryBase
       ? cloneSchema(entryBase)
       : ({ type: "object" } as JsonSchemaObject);
@@ -313,11 +315,28 @@ function applyPluginSchemas(schema: ConfigSchema, plugins: PluginUiMetadata[]): 
         ? mergeObjectSchema(baseConfigSchema, pluginSchema)
         : cloneSchema(plugin.configSchema);
 
-    entryObject.properties = {
-      ...entryObject.properties,
+    const legacySchema = entryObject;
+    if (pluginSchema && isObjectSchema(pluginSchema)) {
+      legacySchema.properties = {
+        ...legacySchema.properties,
+        ...Object.entries(pluginSchema.properties ?? {})
+          .filter(([key]) => !PLUGIN_ENTRY_RESERVED_KEYS.has(key))
+          .reduce<JsonSchemaObject["properties"]>((acc, [key, value]) => {
+            acc[key] = cloneSchema(value);
+            return acc;
+          }, {}),
+      };
+      if (pluginSchema.additionalProperties !== undefined) {
+        legacySchema.additionalProperties = pluginSchema.additionalProperties;
+      }
+    }
+
+    legacySchema.properties = {
+      ...legacySchema.properties,
       config: nextConfigSchema,
     };
-    entryProperties[plugin.id] = entryObject;
+
+    entryProperties[plugin.id] = legacySchema;
   }
 
   return next;

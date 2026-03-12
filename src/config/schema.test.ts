@@ -143,6 +143,35 @@ describe("config schema", () => {
     expect(channelProps?.accessToken).toBeTruthy();
   });
 
+  it("injects plugin config schema keys on the plugin entry root", () => {
+    const res = buildConfigSchema({
+      plugins: [
+        {
+          id: "openclaw-mem0",
+          configSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              mode: { type: "string" },
+              userId: { type: "string" },
+              autoRecall: { type: "boolean" },
+              oss: { type: "boolean" },
+            },
+          },
+        },
+      ],
+    });
+
+    const lookup = lookupConfigSchema(res, "plugins.entries.openclaw-mem0");
+    expect(lookup?.path).toBe("plugins.entries.openclaw-mem0");
+    const childKeys = new Set(lookup?.children.map((child) => child.key));
+    expect(childKeys.has("mode")).toBe(true);
+    expect(childKeys.has("userId")).toBe(true);
+    expect(childKeys.has("autoRecall")).toBe(true);
+    expect(childKeys.has("oss")).toBe(true);
+    expect(childKeys.has("config")).toBe(true);
+  });
+
   it("looks up plugin config paths for slash-delimited plugin ids", () => {
     const res = buildConfigSchema({
       plugins: [

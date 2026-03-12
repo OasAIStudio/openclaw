@@ -77,6 +77,31 @@ describe("normalizePluginsConfig", () => {
     });
     expect(result.entries["voice-call"]?.hooks).toBeUndefined();
   });
+
+  it("moves legacy plugin entry fields into config while preserving enabled/hooks", () => {
+    const result = normalizePluginsConfig({
+      entries: {
+        "openclaw-mem0": {
+          enabled: true,
+          mode: "persistent",
+          userId: "test-user",
+          autoRecall: true,
+          oss: false,
+          hooks: {
+            allowPromptInjection: false,
+          },
+        },
+      },
+    });
+    expect(result.entries["openclaw-mem0"]?.enabled).toBe(true);
+    expect(result.entries["openclaw-mem0"]?.hooks?.allowPromptInjection).toBe(false);
+    expect(result.entries["openclaw-mem0"]?.config).toEqual({
+      mode: "persistent",
+      userId: "test-user",
+      autoRecall: true,
+      oss: false,
+    });
+  });
 });
 
 describe("resolveEffectiveEnableState", () => {

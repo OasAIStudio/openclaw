@@ -37,6 +37,7 @@ describe("config plugin validation", () => {
   let badPluginDir = "";
   let enumPluginDir = "";
   let bluebubblesPluginDir = "";
+  let mem0PluginDir = "";
   let voiceCallSchemaPluginDir = "";
   const envSnapshot = {
     OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR,
@@ -84,6 +85,22 @@ describe("config plugin validation", () => {
       channels: ["bluebubbles"],
       schema: { type: "object" },
     });
+    mem0PluginDir = path.join(suiteHome, "mem0-plugin");
+    await writePluginFixture({
+      dir: mem0PluginDir,
+      id: "openclaw-mem0",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          mode: { type: "string", enum: ["persistent", "ephemeral"] },
+          userId: { type: "string" },
+          autoRecall: { type: "boolean" },
+          oss: { type: "boolean" },
+        },
+        required: ["mode"],
+      },
+    });
     voiceCallSchemaPluginDir = path.join(suiteHome, "voice-call-schema-plugin");
     const voiceCallManifestPath = path.join(
       process.cwd(),
@@ -110,7 +127,9 @@ describe("config plugin validation", () => {
     validateInSuite({
       plugins: {
         enabled: false,
-        load: { paths: [badPluginDir, bluebubblesPluginDir, voiceCallSchemaPluginDir] },
+        load: {
+          paths: [badPluginDir, bluebubblesPluginDir, mem0PluginDir, voiceCallSchemaPluginDir],
+        },
       },
     });
   });
@@ -225,6 +244,25 @@ describe("config plugin validation", () => {
       );
       expect(hasIssue).toBe(true);
     }
+  });
+
+  it("accepts plugin entry legacy root-level keys using plugin schema", async () => {
+    const res = validateInSuite({
+      agents: { list: [{ id: "pi" }] },
+      plugins: {
+        enabled: true,
+        load: { paths: [mem0PluginDir] },
+        entries: {
+          "openclaw-mem0": {
+            mode: "persistent",
+            userId: "user-id-1",
+            autoRecall: true,
+            oss: false,
+          },
+        },
+      },
+    });
+    expect(res.ok).toBe(true);
   });
 
   it("surfaces allowed enum values for plugin config diagnostics", async () => {

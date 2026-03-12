@@ -50,6 +50,28 @@ const normalizeSlotValue = (value: unknown): string | null | undefined => {
   return trimmed;
 };
 
+const RESERVED_PLUGIN_ENTRY_KEYS = new Set(["enabled", "hooks", "config"]);
+
+const normalizePluginEntryConfig = (
+  entry: Record<string, unknown>,
+): Record<string, unknown> | undefined => {
+  let config: Record<string, unknown> | undefined;
+  const entryConfig = entry.config;
+  if (entryConfig && typeof entryConfig === "object" && !Array.isArray(entryConfig)) {
+    config = { ...entryConfig };
+  }
+  for (const [key, value] of Object.entries(entry)) {
+    if (RESERVED_PLUGIN_ENTRY_KEYS.has(key)) {
+      continue;
+    }
+    if (!config) {
+      config = {};
+    }
+    config[key] = value;
+  }
+  return config;
+};
+
 const normalizePluginEntries = (entries: unknown): NormalizedPluginsConfig["entries"] => {
   if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
     return {};
@@ -78,10 +100,11 @@ const normalizePluginEntries = (entries: unknown): NormalizedPluginsConfig["entr
             allowPromptInjection: hooks.allowPromptInjection,
           }
         : undefined;
+    const pluginConfig = normalizePluginEntryConfig(entry);
     normalized[key] = {
       enabled: typeof entry.enabled === "boolean" ? entry.enabled : undefined,
       hooks: normalizedHooks,
-      config: "config" in entry ? entry.config : undefined,
+      config: pluginConfig,
     };
   }
   return normalized;
