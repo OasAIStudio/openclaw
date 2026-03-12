@@ -328,8 +328,7 @@ export class FeishuStreamingSession {
     if (!this.state || this.closed) {
       return;
     }
-    // Marking final delivery ensures any late-arriving updates are ignored and
-    // the current reply content does not leak into the next one.
+    // Mark final delivery immediately to avoid cross-reply text merging.
     if (finalText !== undefined) {
       this.finalDelivered = true;
     }
@@ -381,5 +380,14 @@ export class FeishuStreamingSession {
 
   isFinalDelivered(): boolean {
     return this.finalDelivered;
+  }
+
+  /** Request final delivery for the current stream; returns false if already finalised. */
+  requestFinalDelivery(): boolean {
+    if (!this.state || this.closed || this.finalDelivered) {
+      return false;
+    }
+    this.finalDelivered = true;
+    return true;
   }
 }

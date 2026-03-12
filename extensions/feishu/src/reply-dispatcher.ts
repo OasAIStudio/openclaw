@@ -269,6 +269,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
 
         if (shouldDeliverText) {
           const useCard = renderMode === "card" || (renderMode === "auto" && shouldUseCard(text));
+          let canMergeWithCurrentStreamingText = true;
 
           if (info?.kind === "block") {
             // Drop internal block chunks unless we can safely consume them as
@@ -289,6 +290,14 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             if (streaming?.isFinalDelivered()) {
               await closeStreaming();
             }
+            if (streaming?.isActive()) {
+              canMergeWithCurrentStreamingText = streaming.requestFinalDelivery();
+              if (!canMergeWithCurrentStreamingText) {
+                await closeStreaming();
+              }
+            } else {
+              canMergeWithCurrentStreamingText = false;
+            }
             startStreaming();
             if (streamingStartPromise) {
               await streamingStartPromise;
@@ -302,7 +311,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               queueStreamingUpdate(text, { mode: "delta" });
             }
             if (info?.kind === "final") {
-              streamText = mergeStreamingText(streamText, text);
+              streamText = canMergeWithCurrentStreamingText
+                ? mergeStreamingText(streamText, text)
+                : text;
               await closeStreaming();
               deliveredFinalTexts.add(text);
             }

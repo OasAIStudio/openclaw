@@ -56,6 +56,13 @@ vi.mock("./streaming-card.js", () => ({
     });
     isActive = vi.fn(() => this.active);
     isFinalDelivered = vi.fn(() => this.finalDelivered);
+    requestFinalDelivery = vi.fn(() => {
+      if (!this.active || this.finalDelivered) {
+        return false;
+      }
+      this.finalDelivered = true;
+      return true;
+    });
 
     constructor() {
       streamingInstances.push(this);
