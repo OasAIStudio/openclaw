@@ -3,14 +3,14 @@ import type { ChatEventPayload } from "./controllers/chat.ts";
 
 const NO_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
 
-function isAssistantFinalTextVisible(message: Record<string, unknown>) {
+function shouldReloadForFinalMessage(message: Record<string, unknown>) {
   const role = typeof message.role === "string" ? message.role.toLowerCase() : "";
   if (role && role !== "assistant") {
     return true;
   }
   const text = extractText(message);
   if (!text) {
-    return false;
+    return true;
   }
   return !NO_REPLY_PATTERN.test(text);
 }
@@ -23,5 +23,5 @@ export function shouldReloadHistoryForFinalEvent(payload?: ChatEventPayload): bo
     return true;
   }
   const message = payload.message as Record<string, unknown>;
-  return !isAssistantFinalTextVisible(message);
+  return shouldReloadForFinalMessage(message);
 }
