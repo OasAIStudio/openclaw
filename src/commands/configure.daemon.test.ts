@@ -4,13 +4,26 @@ const withProgress = vi.hoisted(() => vi.fn(async (_opts, run) => run({ setLabel
 const loadConfig = vi.hoisted(() => vi.fn());
 const resolveGatewayInstallToken = vi.hoisted(() => vi.fn());
 const buildGatewayInstallPlan = vi.hoisted(() => vi.fn());
+const cleanStaleGatewayProcessesSync = vi.hoisted(() => vi.fn(() => []));
 const note = vi.hoisted(() => vi.fn());
 const serviceIsLoaded = vi.hoisted(() => vi.fn(async () => false));
 const serviceInstall = vi.hoisted(() => vi.fn(async () => {}));
+const serviceRestart = vi.hoisted(() => vi.fn(async () => {}));
+const serviceUninstall = vi.hoisted(() => vi.fn(async () => {}));
 const ensureSystemdUserLingerInteractive = vi.hoisted(() => vi.fn(async () => {}));
+const runDaemonStop = vi.hoisted(() => vi.fn(async () => {}));
+const select = vi.hoisted(() => vi.fn(async () => "node"));
 
 vi.mock("../cli/progress.js", () => ({
   withProgress,
+}));
+
+vi.mock("../cli/daemon-cli/lifecycle.js", () => ({
+  runDaemonStop,
+}));
+
+vi.mock("../infra/restart-stale-pids.js", () => ({
+  cleanStaleGatewayProcessesSync,
 }));
 
 vi.mock("../config/config.js", () => ({
@@ -32,7 +45,7 @@ vi.mock("../terminal/note.js", () => ({
 
 vi.mock("./configure.shared.js", () => ({
   confirm: vi.fn(async () => true),
-  select: vi.fn(async () => "node"),
+  select,
 }));
 
 vi.mock("./daemon-runtime.js", () => ({
@@ -44,6 +57,8 @@ vi.mock("../daemon/service.js", () => ({
   resolveGatewayService: vi.fn(() => ({
     isLoaded: serviceIsLoaded,
     install: serviceInstall,
+    restart: serviceRestart,
+    uninstall: serviceUninstall,
   })),
 }));
 
@@ -84,6 +99,36 @@ describe("maybeInstallDaemon", () => {
     expect(resolveGatewayInstallToken).toHaveBeenCalledTimes(1);
     expect(buildGatewayInstallPlan).toHaveBeenCalledTimes(1);
     expect("token" in buildGatewayInstallPlan.mock.calls[0][0]).toBe(false);
+    expect(serviceInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops an existing gateway before restart", async () => {
+    serviceIsLoaded.mockResolvedValueOnce(true);
+    select.mockResolvedValueOnce("restart");
+
+    const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+    await maybeInstallDaemon({ runtime, port: 18789 });
+
+    expect(runDaemonStop).toHaveBeenCalledTimes(1);
+    expect(runDaemonStop.mock.invocationCallOrder[0]).toBeLessThan(
+      serviceRestart.mock.invocationCallOrder[0],
+    );
+    expect(serviceRestart).toHaveBeenCalledTimes(1);
+    expect(serviceInstall).toHaveBeenCalledTimes(0);
+    expect(serviceUninstall).toHaveBeenCalledTimes(0);
+  });
+
+  it("stops an existing gateway before fresh install", async () => {
+    const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+    await maybeInstallDaemon({
+      runtime,
+      port: 18789,
+    });
+
+    expect(runDaemonStop).toHaveBeenCalledTimes(1);
+    expect(runDaemonStop.mock.invocationCallOrder[0]).toBeLessThan(
+      serviceInstall.mock.invocationCallOrder[0],
+    );
     expect(serviceInstall).toHaveBeenCalledTimes(1);
   });
 

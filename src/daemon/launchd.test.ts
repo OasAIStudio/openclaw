@@ -8,6 +8,7 @@ import {
   installLaunchAgent,
   isLaunchAgentListed,
   parseLaunchctlPrint,
+  stopLaunchAgent,
   repairLaunchAgentBootstrap,
   restartLaunchAgent,
   resolveLaunchAgentPlistPath,
@@ -367,6 +368,45 @@ describe("launchd install", () => {
       expect(bootoutIndex).toBeGreaterThanOrEqual(0);
       expect(bootstrapIndex).toBeGreaterThanOrEqual(0);
       expect(bootoutIndex).toBeLessThan(bootstrapIndex);
+    } finally {
+      vi.useRealTimers();
+      killSpy.mockRestore();
+    }
+  });
+
+  it("sends SIGTERM and waits for previous launchd pid to exit on stop", async () => {
+    const env = createDefaultLaunchdEnv();
+    state.printOutput = ["state = running", "pid = 4242"].join("\n");
+    const killSpy = vi.spyOn(process, "kill");
+    killSpy
+      .mockImplementationOnce(() => true)
+      .mockImplementationOnce(() => true)
+      .mockImplementationOnce(() => {
+        const err = new Error("no such process") as NodeJS.ErrnoException;
+        err.code = "ESRCH";
+        throw err;
+      });
+
+    vi.useFakeTimers();
+    try {
+      const stopPromise = stopLaunchAgent({
+        env,
+        stdout: new PassThrough(),
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await stopPromise;
+
+      expect(killSpy).toHaveBeenCalledWith(4242, "SIGTERM");
+      expect(killSpy).toHaveBeenCalledWith(4242, 0);
+      const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
+      const serviceId = `${domain}/ai.openclaw.gateway`;
+      const bootoutIndex = state.launchctlCalls.findIndex(
+        (c) => c[0] === "bootout" && c[1] === serviceId,
+      );
+      const printIndex = state.launchctlCalls.findIndex((c) => c[0] === "print");
+      expect(bootoutIndex).toBeGreaterThanOrEqual(0);
+      expect(printIndex).toBeGreaterThanOrEqual(0);
+      expect(printIndex).toBeLessThan(bootoutIndex);
     } finally {
       vi.useRealTimers();
       killSpy.mockRestore();

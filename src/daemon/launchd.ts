@@ -380,12 +380,35 @@ async function waitForPidExit(pid: number): Promise<void> {
   }
 }
 
+async function terminateLaunchdPidWithSigterm(pid: number): Promise<void> {
+  if (!Number.isFinite(pid) || pid <= 1) {
+    return;
+  }
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  await waitForPidExit(pid);
+}
+
 export async function stopLaunchAgent({ stdout, env }: GatewayServiceControlArgs): Promise<void> {
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env });
+  const runtime = await execLaunchctl(["print", `${domain}/${label}`]);
+  const previousPid =
+    runtime.code === 0
+      ? parseLaunchctlPrint(runtime.stdout || runtime.stderr || "").pid
+      : undefined;
+
   const res = await execLaunchctl(["bootout", `${domain}/${label}`]);
   if (res.code !== 0 && !isLaunchctlNotLoaded(res)) {
     throw new Error(`launchctl bootout failed: ${res.stderr || res.stdout}`.trim());
+  }
+  if (typeof previousPid === "number") {
+    await terminateLaunchdPidWithSigterm(previousPid);
   }
   stdout.write(`${formatLine("Stopped LaunchAgent", `${domain}/${label}`)}\n`);
 }
