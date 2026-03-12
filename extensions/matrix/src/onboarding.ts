@@ -24,7 +24,9 @@ const channel = "matrix" as const;
 
 function setMatrixDmPolicy(cfg: CoreConfig, policy: DmPolicy) {
   const allowFrom =
-    policy === "open" ? addWildcardAllowFrom(cfg.channels?.matrix?.dm?.allowFrom) : undefined;
+    policy === "open"
+      ? addWildcardAllowFrom(cfg.channels?.matrix?.allowFrom ?? cfg.channels?.matrix?.dm?.allowFrom)
+      : undefined;
   return {
     ...cfg,
     channels: {
@@ -59,7 +61,8 @@ async function promptMatrixAllowFrom(params: {
   prompter: WizardPrompter;
 }): Promise<CoreConfig> {
   const { cfg, prompter } = params;
-  const existingAllowFrom = cfg.channels?.matrix?.dm?.allowFrom ?? [];
+  const existingAllowFrom =
+    cfg.channels?.matrix?.allowFrom ?? cfg.channels?.matrix?.dm?.allowFrom ?? [];
   const account = resolveMatrixAccount({ cfg });
   const canResolve = Boolean(account.configured);
 

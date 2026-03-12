@@ -67,6 +67,8 @@ export type MatrixConfig = {
   encryption?: boolean;
   /** If true, enforce allowlists for groups + DMs regardless of policy. */
   allowlistOnly?: boolean;
+  /** Top-level allowlist for direct-message senders (matrix user IDs). */
+  allowFrom?: Array<string | number>;
   /** Group message policy (default: allowlist). */
   groupPolicy?: GroupPolicy;
   /** Allowlist for group senders (matrix user IDs). */

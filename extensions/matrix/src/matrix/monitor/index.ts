@@ -210,11 +210,12 @@ async function resolveMatrixMonitorConfig(params: {
   groupAllowFrom: string[];
   roomsConfig?: Record<string, MatrixRoomConfig>;
 }> {
+  const configuredAllowFrom = params.accountConfig.allowFrom ?? params.accountConfig.dm?.allowFrom;
   const allowFrom = await resolveMatrixUserAllowlist({
     cfg: params.cfg,
     runtime: params.runtime,
-    label: "matrix dm allowlist",
-    list: params.accountConfig.dm?.allowFrom ?? [],
+    label: "matrix allowlist",
+    list: configuredAllowFrom ?? [],
   });
   const groupAllowFrom = await resolveMatrixUserAllowlist({
     cfg: params.cfg,
