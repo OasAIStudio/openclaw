@@ -469,6 +469,164 @@ function isSameModelSnapshot(a: ModelSnapshotEntry, b: ModelSnapshotEntry): bool
   );
 }
 
+function normalizeStringValue(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function buildAllowedToolNameSet(allowedToolNames?: Iterable<string>): Set<string> | undefined {
+  if (!allowedToolNames) {
+    return undefined;
+  }
+  const normalized = new Set<string>();
+  for (const toolName of allowedToolNames) {
+    const next = normalizeStringValue(toolName);
+    if (next) {
+      normalized.add(next.toLowerCase());
+    }
+  }
+  return normalized.size === 0 ? undefined : normalized;
+}
+
+function sanitizeModelSwitchFunctionBlocks(params: {
+  messages: AgentMessage[];
+  allowedToolNames?: Iterable<string>;
+}): AgentMessage[] {
+  const allowedNames = buildAllowedToolNameSet(params.allowedToolNames);
+  let changed = false;
+  const out: AgentMessage[] = [];
+
+  for (const msg of params.messages) {
+    const role = (msg as { role?: unknown }).role;
+    if (role === "assistant" || role === "user") {
+      const content = Array.isArray((msg as { content?: unknown }).content)
+        ? (msg as { content: unknown[] }).content
+        : undefined;
+      if (!content) {
+        out.push(msg);
+        continue;
+      }
+
+      const nextContent: unknown[] = [];
+      let messageChanged = false;
+
+      for (const block of content) {
+        if (!block || typeof block !== "object") {
+          nextContent.push(block);
+          continue;
+        }
+
+        const record = block as Record<string, unknown>;
+
+        // Preserve only function call/response blocks with valid, non-empty names
+        // and without legacy unsupported ids when restoring context after a model
+        // change. Stale function call state can leak into Gemini requests and
+        // produce empty functionResponse.name payloads.
+        if (record.functionCall && typeof record.functionCall === "object") {
+          const fn = record.functionCall as Record<string, unknown>;
+          const normalizedName = normalizeStringValue(fn.name);
+          if (!normalizedName) {
+            changed = true;
+            messageChanged = true;
+            continue;
+          }
+          const name = normalizedName.toLowerCase();
+          if (allowedNames && !allowedNames.has(name)) {
+            changed = true;
+            messageChanged = true;
+            continue;
+          }
+          if (normalizedName !== (fn.name as string)) {
+            changed = true;
+            nextContent.push({ ...record, functionCall: { ...fn, name: normalizedName } });
+          } else {
+            nextContent.push(block);
+          }
+          messageChanged = true;
+          continue;
+        }
+
+        if (record.functionResponse && typeof record.functionResponse === "object") {
+          const fn = record.functionResponse as Record<string, unknown>;
+          const normalizedName = normalizeStringValue(fn.name);
+          if (!normalizedName) {
+            changed = true;
+            messageChanged = true;
+            continue;
+          }
+          const name = normalizedName.toLowerCase();
+          if (allowedNames && !allowedNames.has(name)) {
+            changed = true;
+            messageChanged = true;
+            continue;
+          }
+          if (normalizedName !== (fn.name as string)) {
+            changed = true;
+            nextContent.push({ ...record, functionResponse: { ...fn, name: normalizedName } });
+          } else {
+            nextContent.push(block);
+          }
+          messageChanged = true;
+          continue;
+        }
+
+        nextContent.push(block);
+      }
+
+      if (nextContent.length === 0) {
+        if (messageChanged) {
+          changed = true;
+        }
+        continue;
+      }
+      if (messageChanged) {
+        changed = true;
+        out.push({ ...msg, content: nextContent } as AgentMessage);
+        continue;
+      }
+      out.push(msg);
+      continue;
+    }
+
+    if (role !== "toolResult") {
+      out.push(msg);
+      continue;
+    }
+
+    const toolCallId = normalizeStringValue((msg as { toolCallId?: unknown }).toolCallId);
+    if (!toolCallId) {
+      changed = true;
+      continue;
+    }
+    const toolName = normalizeStringValue((msg as { toolName?: unknown }).toolName);
+    if (!toolName) {
+      changed = true;
+      continue;
+    }
+    if (allowedNames && !allowedNames.has(toolName.toLowerCase())) {
+      changed = true;
+      continue;
+    }
+    if (toolName !== (msg as { toolName?: unknown }).toolName) {
+      out.push({ ...msg, toolCallId, toolName } as AgentMessage);
+      changed = true;
+      continue;
+    }
+    if (toolCallId !== (msg as { toolCallId?: unknown }).toolCallId) {
+      out.push({ ...msg, toolCallId } as AgentMessage);
+      changed = true;
+      continue;
+    }
+
+    out.push(msg);
+  }
+
+  return changed ? out : params.messages;
+}
+
 function hasGoogleTurnOrderingMarker(sessionManager: SessionManager): boolean {
   try {
     return sessionManager
@@ -555,14 +713,6 @@ export async function sanitizeSessionHistory(params: {
   const sanitizedToolCalls = sanitizeToolCallInputs(droppedThinking, {
     allowedToolNames: params.allowedToolNames,
   });
-  const repairedTools = policy.repairToolUseResultPairing
-    ? sanitizeToolUseResultPairing(sanitizedToolCalls)
-    : sanitizedToolCalls;
-  const sanitizedToolResults = stripToolResultDetails(repairedTools);
-  const sanitizedCompactionUsage = ensureAssistantUsageSnapshots(
-    stripStaleAssistantUsageBeforeLatestCompaction(sanitizedToolResults),
-  );
-
   const isOpenAIResponsesApi =
     params.modelApi === "openai-responses" || params.modelApi === "openai-codex-responses";
   const hasSnapshot = Boolean(params.provider || params.modelApi || params.modelId);
@@ -575,6 +725,17 @@ export async function sanitizeSessionHistory(params: {
         modelId: params.modelId,
       })
     : false;
+  const sanitizedModelSwitchArtifacts = sanitizeModelSwitchFunctionBlocks({
+    messages: sanitizedToolCalls,
+    allowedToolNames: params.allowedToolNames,
+  });
+  const repairedTools = policy.repairToolUseResultPairing
+    ? sanitizeToolUseResultPairing(sanitizedModelSwitchArtifacts)
+    : sanitizedModelSwitchArtifacts;
+  const sanitizedToolResults = stripToolResultDetails(repairedTools);
+  const sanitizedCompactionUsage = ensureAssistantUsageSnapshots(
+    stripStaleAssistantUsageBeforeLatestCompaction(sanitizedToolResults),
+  );
   const sanitizedOpenAI = isOpenAIResponsesApi
     ? downgradeOpenAIFunctionCallReasoningPairs(
         downgradeOpenAIReasoningBlocks(sanitizedCompactionUsage),

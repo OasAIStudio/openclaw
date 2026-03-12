@@ -669,6 +669,82 @@ describe("sanitizeSessionHistory", () => {
     expect(result).toEqual([]);
   });
 
+  it("drops orphaned functionResponse/name artifacts when switching to Gemini", async () => {
+    const sessionEntries = [
+      makeModelSnapshotEntry({
+        provider: "grok-provider",
+        modelApi: "grok-api",
+        modelId: "grok-latest",
+      }),
+    ];
+    const sessionManager = makeInMemorySessionManager(sessionEntries);
+    const messages: AgentMessage[] = [
+      castAgentMessage({ role: "user", content: "start" }),
+      {
+        role: "assistant",
+        content: [
+          {
+            functionResponse: {
+              name: "",
+              id: "old_function_response_id",
+              response: { output: "stale artifact" },
+            },
+          },
+          {
+            functionCall: {
+              name: "",
+              id: "old_function_call_id",
+              args: {},
+            },
+          },
+          { type: "text", text: "Gemini follows." },
+        ],
+        provider: "google",
+        api: "google-generative-ai",
+        model: "gemini-latest",
+        stopReason: "stop",
+        timestamp: nextTimestamp(),
+      },
+    ];
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "google-gemini-cli",
+      provider: "google",
+      modelId: "gemini-latest",
+      sessionManager,
+      sessionId: TEST_SESSION_ID,
+      policy: {
+        sanitizeMode: "full",
+        sanitizeToolCallIds: true,
+        repairToolUseResultPairing: true,
+        preserveSignatures: false,
+        sanitizeThoughtSignatures: undefined,
+        sanitizeThinkingSignatures: false,
+        dropThinkingBlocks: false,
+        applyGoogleTurnOrdering: false,
+        validateGeminiTurns: false,
+        validateAnthropicTurns: false,
+        allowSyntheticToolResults: false,
+      },
+    });
+    expect(result.map((message) => message.role)).toEqual(["user", "assistant"]);
+    const assistantMessage = result.find((message) => message.role === "assistant");
+    const assistantContent = assistantMessage
+      ? (assistantMessage as { content?: unknown }).content
+      : undefined;
+    const containsFunctionArtifacts =
+      Array.isArray(assistantContent) &&
+      assistantContent.some(
+        (block) =>
+          !!block &&
+          typeof block === "object" &&
+          ((block as Record<string, unknown>).functionResponse ||
+            (block as Record<string, unknown>).functionCall),
+      );
+    expect(containsFunctionArtifacts).toBe(false);
+  });
+
   it("drops orphaned toolResult entries when switching from openai history to anthropic", async () => {
     const sessionEntries = [
       makeModelSnapshotEntry({
