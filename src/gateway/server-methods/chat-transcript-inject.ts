@@ -15,6 +15,21 @@ export type GatewayInjectedTranscriptAppendResult = {
   error?: string;
 };
 
+export function appendMessageToTranscript(params: {
+  transcriptPath: string;
+  message: AppendMessageArg;
+}): GatewayInjectedTranscriptAppendResult {
+  try {
+    // IMPORTANT: Use SessionManager so the entry is attached to the current leaf via parentId.
+    // Raw jsonl appends break the parent chain and can hide compaction summaries from context.
+    const sessionManager = SessionManager.open(params.transcriptPath);
+    const messageId = sessionManager.appendMessage(params.message);
+    return { ok: true, messageId, message: params.message };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function appendInjectedAssistantMessageToTranscript(params: {
   transcriptPath: string;
   message: string;
@@ -62,14 +77,8 @@ export function appendInjectedAssistantMessageToTranscript(params: {
         }
       : {}),
   };
-
-  try {
-    // IMPORTANT: Use SessionManager so the entry is attached to the current leaf via parentId.
-    // Raw jsonl appends break the parent chain and can hide compaction summaries from context.
-    const sessionManager = SessionManager.open(params.transcriptPath);
-    const messageId = sessionManager.appendMessage(messageBody);
-    return { ok: true, messageId, message: messageBody };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+  return appendMessageToTranscript({
+    transcriptPath: params.transcriptPath,
+    message: messageBody,
+  });
 }

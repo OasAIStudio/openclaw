@@ -11,6 +11,7 @@ import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.j
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
+import { saveMediaBuffer } from "../../media/store.js";
 import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
@@ -60,7 +61,10 @@ import { formatForLog } from "../ws-log.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 import { setGatewayDedupeEntry } from "./agent-wait-dedupe.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
-import { appendInjectedAssistantMessageToTranscript } from "./chat-transcript-inject.js";
+import {
+  appendInjectedAssistantMessageToTranscript,
+  appendMessageToTranscript,
+} from "./chat-transcript-inject.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
@@ -86,6 +90,7 @@ type AbortedPartialSnapshot = {
 const CHAT_HISTORY_TEXT_MAX_CHARS = 12_000;
 const CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES = 128 * 1024;
 const CHAT_HISTORY_OVERSIZED_PLACEHOLDER = "[chat.history omitted: message too large]";
+const CHAT_SEND_ATTACHMENT_MAX_BYTES = 5_000_000;
 let chatHistoryPlaceholderEmitCount = 0;
 const CHANNEL_AGNOSTIC_SESSION_SCOPES = new Set([
   "main",
@@ -594,6 +599,101 @@ function appendAssistantTranscriptMessage(params: {
   });
 }
 
+type ChatUserHistoryContentBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "image_url";
+      image_url: {
+        url: string;
+      };
+    };
+
+function buildChatUserHistoryContent(
+  message: string,
+  imageUrls: string[],
+): ChatUserHistoryContentBlock[] {
+  const content: ChatUserHistoryContentBlock[] = [];
+  const trimmedMessage = message.trim();
+  if (trimmedMessage) {
+    content.push({ type: "text", text: trimmedMessage });
+  }
+  for (const imageUrl of imageUrls) {
+    const trimmed = imageUrl.trim();
+    if (trimmed) {
+      content.push({ type: "image_url", image_url: { url: trimmed } });
+    }
+  }
+  return content;
+}
+
+async function persistChatImageAttachments(images: ChatImageContent[]): Promise<string[]> {
+  const imageUrls: string[] = [];
+  for (const image of images) {
+    const buffer = Buffer.from(image.data, "base64");
+    const saved = await saveMediaBuffer(buffer, image.mimeType, "", CHAT_SEND_ATTACHMENT_MAX_BYTES);
+    imageUrls.push(`/media/${saved.id}`);
+  }
+  return imageUrls;
+}
+
+function appendUserTranscriptMessage(params: {
+  sessionId: string;
+  message: string;
+  imageUrls: string[];
+  storePath: string | undefined;
+  sessionFile?: string;
+  agentId?: string;
+  createIfMissing?: boolean;
+  idempotencyKey?: string;
+  now?: number;
+}): TranscriptAppendResult {
+  const transcriptPath = resolveTranscriptPath({
+    sessionId: params.sessionId,
+    storePath: params.storePath,
+    sessionFile: params.sessionFile,
+    agentId: params.agentId,
+  });
+  if (!transcriptPath) {
+    return { ok: false, error: "transcript path not resolved" };
+  }
+
+  if (!fs.existsSync(transcriptPath)) {
+    if (!params.createIfMissing) {
+      return { ok: false, error: "transcript file not found" };
+    }
+    const ensured = ensureTranscriptFile({
+      transcriptPath,
+      sessionId: params.sessionId,
+    });
+    if (!ensured.ok) {
+      return { ok: false, error: ensured.error ?? "failed to create transcript file" };
+    }
+  }
+
+  if (params.idempotencyKey && transcriptHasIdempotencyKey(transcriptPath, params.idempotencyKey)) {
+    return { ok: true };
+  }
+
+  const content = buildChatUserHistoryContent(params.message, params.imageUrls);
+  if (content.length === 0) {
+    return { ok: false, error: "user message has no persistable content" };
+  }
+
+  const now = params.now ?? Date.now();
+  return appendMessageToTranscript({
+    transcriptPath,
+    message: {
+      role: "user",
+      content,
+      timestamp: now,
+      ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
+      api: "openclaw-webchat",
+      provider: "openclaw",
+      model: "webchat",
+    } as Parameters<typeof appendMessageToTranscript>[0]["message"],
+  });
+}
+
 function collectSessionAbortPartials(params: {
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   chatRunBuffers: Map<string, string>;
@@ -945,7 +1045,7 @@ export const chatHandlers: GatewayRequestHandlers = {
     if (normalizedAttachments.length > 0) {
       try {
         const parsed = await parseMessageWithAttachments(inboundMessage, normalizedAttachments, {
-          maxBytes: 5_000_000,
+          maxBytes: CHAT_SEND_ATTACHMENT_MAX_BYTES,
           log: context.logGateway,
         });
         parsedMessage = parsed.message;
@@ -956,7 +1056,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       }
     }
     const rawSessionKey = p.sessionKey;
-    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const { cfg, storePath, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,
@@ -1007,6 +1107,41 @@ export const chatHandlers: GatewayRequestHandlers = {
         runId: clientRunId,
       });
       return;
+    }
+
+    let imageUrls: string[] = [];
+    if (parsedImages.length > 0) {
+      try {
+        imageUrls = await persistChatImageAttachments(parsedImages);
+      } catch (err) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, `failed to save image attachment: ${String(err)}`),
+        );
+        return;
+      }
+    }
+
+    const agentId = resolveSessionAgentId({
+      sessionKey,
+      config: cfg,
+    });
+    const userAppendResult = appendUserTranscriptMessage({
+      sessionId: entry?.sessionId ?? clientRunId,
+      storePath,
+      sessionFile: entry?.sessionFile,
+      agentId,
+      createIfMissing: true,
+      message: parsedMessage,
+      imageUrls,
+      idempotencyKey: clientRunId,
+      now,
+    });
+    if (!userAppendResult.ok) {
+      context.logGateway.warn(
+        `webchat user transcript append failed: ${userAppendResult.error ?? "unknown error"}`,
+      );
     }
 
     try {
@@ -1076,10 +1211,6 @@ export const chatHandlers: GatewayRequestHandlers = {
         GatewayClientScopes: client?.connect?.scopes,
       };
 
-      const agentId = resolveSessionAgentId({
-        sessionKey,
-        config: cfg,
-      });
       const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
         cfg,
         agentId,
