@@ -158,6 +158,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     if (!nextText) {
       return;
     }
+    if (streaming?.isFinalDelivered()) {
+      return;
+    }
     if (options?.dedupeWithLastPartial && nextText === lastPartial) {
       return;
     }
@@ -179,6 +182,16 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
 
   const startStreaming = () => {
     if (!streamingEnabled || streamingStartPromise || streaming) {
+      if (streaming?.isActive()) {
+        return;
+      }
+      if (streaming && streaming.isFinalDelivered()) {
+        streaming = null;
+      } else {
+        return;
+      }
+    }
+    if (streaming) {
       return;
     }
     streamingStartPromise = (async () => {
@@ -263,6 +276,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             if (!(streamingEnabled && useCard)) {
               return;
             }
+            if (streaming?.isFinalDelivered()) {
+              await closeStreaming();
+            }
             startStreaming();
             if (streamingStartPromise) {
               await streamingStartPromise;
@@ -270,6 +286,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           }
 
           if (info?.kind === "final" && streamingEnabled && useCard) {
+            if (streaming?.isFinalDelivered()) {
+              await closeStreaming();
+            }
             startStreaming();
             if (streamingStartPromise) {
               await streamingStartPromise;

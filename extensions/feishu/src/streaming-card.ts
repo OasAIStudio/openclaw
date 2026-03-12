@@ -149,6 +149,7 @@ export class FeishuStreamingSession {
   private state: CardState | null = null;
   private queue: Promise<void> = Promise.resolve();
   private closed = false;
+  private finalDelivered = false;
   private log?: (msg: string) => void;
   private lastUpdateTime = 0;
   private pendingText: string | null = null;
@@ -169,6 +170,7 @@ export class FeishuStreamingSession {
       return;
     }
 
+    this.finalDelivered = false;
     const apiBase = resolveApiBase(this.creds.domain);
     const cardJson: Record<string, unknown> = {
       schema: "2.0",
@@ -291,7 +293,7 @@ export class FeishuStreamingSession {
   }
 
   async update(text: string): Promise<void> {
-    if (!this.state || this.closed) {
+    if (!this.state || this.closed || this.finalDelivered) {
       return;
     }
     const mergedInput = mergeStreamingText(this.pendingText ?? this.state.currentText, text);
@@ -325,6 +327,11 @@ export class FeishuStreamingSession {
   async close(finalText?: string): Promise<void> {
     if (!this.state || this.closed) {
       return;
+    }
+    // Marking final delivery ensures any late-arriving updates are ignored and
+    // the current reply content does not leak into the next one.
+    if (finalText !== undefined) {
+      this.finalDelivered = true;
     }
     this.closed = true;
     await this.queue;
@@ -370,5 +377,9 @@ export class FeishuStreamingSession {
 
   isActive(): boolean {
     return this.state !== null && !this.closed;
+  }
+
+  isFinalDelivered(): boolean {
+    return this.finalDelivered;
   }
 }

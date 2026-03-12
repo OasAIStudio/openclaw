@@ -45,14 +45,17 @@ vi.mock("./streaming-card.js", () => ({
   },
   FeishuStreamingSession: class {
     active = false;
+    finalDelivered = false;
     start = vi.fn(async () => {
       this.active = true;
     });
     update = vi.fn(async () => {});
-    close = vi.fn(async () => {
+    close = vi.fn(async (text?: string) => {
+      this.finalDelivered = text !== undefined;
       this.active = false;
     });
     isActive = vi.fn(() => this.active);
+    isFinalDelivered = vi.fn(() => this.finalDelivered);
 
     constructor() {
       streamingInstances.push(this);
