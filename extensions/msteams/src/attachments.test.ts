@@ -486,6 +486,8 @@ const GRAPH_MEDIA_SUCCESS_CASES: GraphMediaSuccessCase[] = [
     expectedLength: 1,
     assert: ({ fetchMock }) => {
       expect(fetchMock).toHaveBeenCalled();
+      const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+      expect(calledUrls).toContain(`${DEFAULT_MESSAGE_URL}/hostedContents/1/$value`);
       expectMediaBufferSaved();
     },
   }),
@@ -525,6 +527,14 @@ const GRAPH_URL_EXPECTATION_CASES: GraphUrlExpectationCase[] = [
       messageId: "456",
     },
     expectedPath: "/chats/19%3Achat%40thread.v2/messages/456",
+  }),
+  withLabel("normalizes personal aad conversation ids", {
+    params: {
+      conversationType: "personal" as const,
+      conversationId: "a:k3FbDjOPTx-Mvm8SNFZ4kA",
+      messageId: "456",
+    },
+    expectedPath: "/chats/19%3A93715b0e-338f-4f1f-8cbe-6f1234567890%40unq.gbl.spaces/messages/456",
   }),
 ];
 
@@ -567,20 +577,41 @@ const createGraphEndpointResponseHandlers = (params: {
   hostedContents: unknown[];
   attachments: unknown[];
   messageAttachments: unknown[];
-}): GraphEndpointResponseHandler[] => [
-  {
-    suffix: "/hostedContents",
-    buildResponse: () => createGraphCollectionResponse(params.hostedContents),
-  },
-  {
-    suffix: "/attachments",
-    buildResponse: () => createGraphCollectionResponse(params.attachments),
-  },
-  {
-    suffix: "/messages/123",
-    buildResponse: () => createJsonResponse({ attachments: params.messageAttachments }),
-  },
-];
+}): GraphEndpointResponseHandler[] => {
+  const handlers: GraphEndpointResponseHandler[] = [
+    {
+      suffix: "/hostedContents",
+      buildResponse: () => createGraphCollectionResponse(params.hostedContents),
+    },
+    {
+      suffix: "/attachments",
+      buildResponse: () => createGraphCollectionResponse(params.attachments),
+    },
+    {
+      suffix: "/messages/123",
+      buildResponse: () => createJsonResponse({ attachments: params.messageAttachments }),
+    },
+  ];
+
+  for (const raw of params.hostedContents) {
+    if (!raw || typeof raw !== "object") {
+      continue;
+    }
+    const hosted = raw as { id?: unknown; contentType?: unknown };
+    const id = typeof hosted.id === "string" ? hosted.id.trim() : "";
+    if (!id) {
+      continue;
+    }
+    const contentType =
+      typeof hosted.contentType === "string" ? hosted.contentType : CONTENT_TYPE_IMAGE_PNG;
+    handlers.push({
+      suffix: `/hostedContents/${encodeURIComponent(id)}/$value`,
+      buildResponse: () => createBufferResponse(PNG_BUFFER, contentType),
+    });
+  }
+
+  return handlers;
+};
 const resolveGraphEndpointResponse = (
   url: string,
   handlers: GraphEndpointResponseHandler[],

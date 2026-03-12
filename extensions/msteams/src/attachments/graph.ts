@@ -48,6 +48,58 @@ function readNestedString(value: unknown, keys: Array<string | number>): string 
   return typeof current === "string" && current.trim() ? current.trim() : undefined;
 }
 
+function normalizeAadConversationId(value: string): string | undefined {
+  const trimmed = value.trim().split(";")[0] ?? "";
+  if (!trimmed) {
+    return undefined;
+  }
+  if (!trimmed.startsWith("a:")) {
+    return trimmed;
+  }
+
+  const encoded = trimmed.slice(2);
+  if (!encoded) {
+    return `19:${encoded}@unq.gbl.spaces`;
+  }
+
+  const toHex = (decoded: Buffer) => decoded.toString("hex").toLowerCase();
+  const formatGuid = (hex: string): string =>
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  const decodeBase64Url = (input: string): Buffer | undefined => {
+    try {
+      const decoded = Buffer.from(input, "base64url");
+      return decoded.length === 0 ? undefined : decoded;
+    } catch {
+      // Fall through to manual normalization for compatibility with older Node runtimes.
+    }
+
+    const normalized = input
+      .replace(/-/g, "+")
+      .replace(/_/g, "/")
+      .replace(/[^A-Za-z0-9+/=]/g, "");
+    const padded =
+      normalized.length % 4 === 0
+        ? normalized
+        : `${normalized}${"=".repeat(4 - (normalized.length % 4))}`;
+    try {
+      const decoded = Buffer.from(padded, "base64");
+      return decoded.length === 0 ? undefined : decoded;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const decoded = decodeBase64Url(encoded);
+  if (decoded && decoded.length >= 16) {
+    const hex = toHex(decoded);
+    if (hex.length >= 32) {
+      return `19:${formatGuid(hex)}@unq.gbl.spaces`;
+    }
+  }
+
+  return `19:${encoded}@unq.gbl.spaces`;
+}
+
 export function buildMSTeamsGraphMessageUrls(params: {
   conversationType?: string | null;
   conversationId?: string | null;
@@ -105,7 +157,12 @@ export function buildMSTeamsGraphMessageUrls(params: {
     return Array.from(new Set(urls));
   }
 
-  const chatId = params.conversationId?.trim() || readNestedString(params.channelData, ["chatId"]);
+  const chatId = normalizeAadConversationId(
+    params.conversationId?.trim() ||
+      readNestedString(params.channelData, ["chatId"]) ||
+      readNestedString(params.channelData, ["chat", "id"]) ||
+      "",
+  );
   if (!chatId) {
     return [];
   }
@@ -146,6 +203,39 @@ async function fetchGraphCollection<T>(params: {
     } catch {
       return { status, items: [] };
     }
+  } finally {
+    await release();
+  }
+}
+
+async function fetchHostedContentValue(params: {
+  id: string;
+  messageUrl: string;
+  accessToken: string;
+  fetchFn?: typeof fetch;
+  ssrfPolicy?: SsrFPolicy;
+}): Promise<{ status: number; buffer?: Buffer; contentType?: string }> {
+  const fetchFn = params.fetchFn ?? fetch;
+  const { response, release } = await fetchWithSsrFGuard({
+    url: `${params.messageUrl}/hostedContents/${encodeURIComponent(params.id)}/$value`,
+    fetchImpl: fetchFn,
+    init: {
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+    },
+    policy: params.ssrfPolicy,
+    auditContext: "msteams.graph.hosted-content",
+  });
+  try {
+    const status = response.status;
+    if (!response.ok) {
+      return { status };
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return {
+      status,
+      buffer: Buffer.from(arrayBuffer),
+      contentType: response.headers.get("content-type") ?? undefined,
+    };
   } finally {
     await release();
   }
@@ -193,13 +283,27 @@ async function downloadGraphHostedContent(params: {
 
   const out: MSTeamsInboundMedia[] = [];
   for (const item of hosted.items) {
-    const contentBytes = typeof item.contentBytes === "string" ? item.contentBytes : "";
-    if (!contentBytes) {
-      continue;
-    }
-    let buffer: Buffer;
+    let buffer: Buffer | undefined;
+    let headerContentType = item.contentType ?? undefined;
     try {
-      buffer = Buffer.from(contentBytes, "base64");
+      if (typeof item.id !== "string" || !item.id.trim()) {
+        continue;
+      }
+
+      const valueResponse = await fetchHostedContentValue({
+        id: item.id,
+        messageUrl: params.messageUrl,
+        accessToken: params.accessToken,
+        fetchFn: params.fetchFn,
+        ssrfPolicy: params.ssrfPolicy,
+      });
+      if (!valueResponse.buffer) {
+        continue;
+      }
+      buffer = valueResponse.buffer;
+      if (valueResponse.contentType) {
+        headerContentType = valueResponse.contentType;
+      }
     } catch {
       continue;
     }
@@ -208,7 +312,7 @@ async function downloadGraphHostedContent(params: {
     }
     const mime = await getMSTeamsRuntime().media.detectMime({
       buffer,
-      headerMime: item.contentType ?? undefined,
+      headerMime: headerContentType,
     });
     // Download any file type, not just images
     try {
