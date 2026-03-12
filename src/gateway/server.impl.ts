@@ -965,6 +965,8 @@ export async function startGatewayServer(
             cronState = nextState.cronState;
             cron = cronState.cron;
             cronStorePath = cronState.storePath;
+            gatewayRequestContext.cron = cron;
+            gatewayRequestContext.cronStorePath = cronStorePath;
             browserControl = nextState.browserControl;
             channelHealthMonitor = nextState.channelHealthMonitor;
           },

@@ -16,9 +16,24 @@ const hoisted = vi.hoisted(() => {
   const cronInstances: Array<{
     start: ReturnType<typeof vi.fn>;
     stop: ReturnType<typeof vi.fn>;
+    enqueueRun: ReturnType<typeof vi.fn>;
+    run: ReturnType<typeof vi.fn>;
+    status: ReturnType<typeof vi.fn>;
   }> = [];
 
   class CronServiceMock {
+    status = vi.fn(async () => ({
+      enabled: true,
+      storePath: "/tmp/cron.json",
+      jobs: 0,
+      nextWakeAtMs: null,
+    }));
+    enqueueRun = vi.fn(async () => ({
+      ok: true,
+      enqueued: true,
+      runId: "mock-run-id",
+    }));
+    run = vi.fn(async () => ({ ok: false, ran: false, reason: "not-due" }));
     start = vi.fn(async () => {});
     stop = vi.fn();
     constructor() {
@@ -564,6 +579,63 @@ describe("gateway hot reload", () => {
 
       expect(signalSpy).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("uses refreshed cron service from hot reload in request handlers", async () => {
+    const { server, ws } = await startServerWithClient();
+    try {
+      await connectOk(ws);
+      const onHotReload = hoisted.getOnHotReload();
+      expect(onHotReload).toBeTypeOf("function");
+
+      const beforeCronCount = hoisted.cronInstances.length;
+      const firstCron = hoisted.cronInstances.at(beforeCronCount - 1);
+      if (!firstCron) {
+        throw new Error("Expected initial cron service instance");
+      }
+      const initialStatus = await rpcReq(ws, "cron.status", {});
+      expect(initialStatus.ok).toBe(true);
+      expect(initialStatus.payload).toMatchObject({ enabled: true, storePath: "/tmp/cron.json" });
+      expect(firstCron.status).toHaveBeenCalledTimes(1);
+
+      await onHotReload?.(
+        {
+          changedPaths: ["cron.enabled"],
+          restartGateway: false,
+          restartReasons: [],
+          hotReasons: [],
+          reloadHooks: false,
+          restartGmailWatcher: false,
+          restartBrowserControl: false,
+          restartCron: true,
+          restartHeartbeat: false,
+          restartChannels: new Set(),
+          noopPaths: [],
+        },
+        {},
+      );
+
+      expect(hoisted.cronInstances.length).toBe(beforeCronCount + 1);
+      const secondCron = hoisted.cronInstances.at(beforeCronCount);
+      if (!secondCron) {
+        throw new Error("Expected reloaded cron service instance");
+      }
+      expect(firstCron.stop).toHaveBeenCalledTimes(1);
+      expect(secondCron.start).toHaveBeenCalledTimes(1);
+
+      const runResponse = await rpcReq(ws, "cron.run", { id: "job-1", mode: "force" }, 1_000);
+      expect(runResponse.ok).toBe(true);
+      expect(runResponse.payload).toEqual({
+        ok: true,
+        enqueued: true,
+        runId: "mock-run-id",
+      });
+      expect(secondCron.enqueueRun).toHaveBeenCalledTimes(1);
+      expect(firstCron.enqueueRun).toHaveBeenCalledTimes(0);
+    } finally {
+      ws.close();
+      await server.close();
+    }
   });
 
   it("fails startup when required secret refs are unresolved", async () => {
