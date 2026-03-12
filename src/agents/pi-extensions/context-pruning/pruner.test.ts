@@ -76,6 +76,23 @@ describe("pruneContextMessages", () => {
     ).not.toThrow();
   });
 
+  it("does not crash on assistant message with malformed non-array content", () => {
+    const messages: AgentMessage[] = [
+      makeUser("hello"),
+      {
+        role: "assistant",
+        content: { content: "error payload from provider" },
+      } as unknown as AgentMessage,
+    ];
+    expect(() =>
+      pruneContextMessages({
+        messages,
+        settings: DEFAULT_CONTEXT_PRUNING_SETTINGS,
+        ctx: CONTEXT_WINDOW_1M,
+      }),
+    ).not.toThrow();
+  });
+
   it("does not crash on assistant message with null content entries", () => {
     const messages: AgentMessage[] = [
       makeUser("hello"),

@@ -22,6 +22,30 @@ function collectTextSegments(content: ReadonlyArray<TextContent | ImageContent>)
   return parts;
 }
 
+function estimatePrimitiveContentLength(content: unknown): number {
+  if (typeof content === "string") {
+    return content.length;
+  }
+  if (content == null) {
+    return 0;
+  }
+  if (typeof content === "number" || typeof content === "boolean") {
+    return String(content).length;
+  }
+  if (typeof content === "object") {
+    try {
+      return JSON.stringify(content).length;
+    } catch {
+      return 0;
+    }
+  }
+  return 0;
+}
+
+function asStructuredContent(content: unknown): ReadonlyArray<TextContent | ImageContent> {
+  return Array.isArray(content) ? (content as ReadonlyArray<TextContent | ImageContent>) : [];
+}
+
 function collectPrunableToolResultSegments(
   content: ReadonlyArray<TextContent | ImageContent>,
 ): string[] {
@@ -130,10 +154,17 @@ function estimateMessageChars(message: AgentMessage): number {
     if (typeof content === "string") {
       return content.length;
     }
-    return estimateTextAndImageChars(content);
+    if (Array.isArray(content)) {
+      return estimateTextAndImageChars(content);
+    }
+    return estimatePrimitiveContentLength(content);
   }
 
   if (message.role === "assistant") {
+    if (!Array.isArray(message.content)) {
+      return estimatePrimitiveContentLength(message.content);
+    }
+
     let chars = 0;
     for (const b of message.content) {
       if (!b || typeof b !== "object") {
@@ -157,7 +188,7 @@ function estimateMessageChars(message: AgentMessage): number {
   }
 
   if (message.role === "toolResult") {
-    return estimateTextAndImageChars(message.content);
+    return estimateTextAndImageChars(asStructuredContent(message.content));
   }
 
   return 256;
@@ -205,10 +236,11 @@ function softTrimToolResultMessage(params: {
   settings: EffectiveContextPruningSettings;
 }): ToolResultMessage | null {
   const { msg, settings } = params;
-  const hasImages = hasImageBlocks(msg.content);
+  const content = asStructuredContent(msg.content);
+  const hasImages = hasImageBlocks(content);
   const parts = hasImages
-    ? collectPrunableToolResultSegments(msg.content)
-    : collectTextSegments(msg.content);
+    ? collectPrunableToolResultSegments(content)
+    : collectTextSegments(content);
   const rawLen = estimateJoinedTextLength(parts);
   if (rawLen <= settings.softTrim.maxChars) {
     if (!hasImages) {
