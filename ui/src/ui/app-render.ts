@@ -963,6 +963,7 @@ export function renderApp(state: AppViewState) {
                   state.chatStreamStartedAt = null;
                   state.chatRunId = null;
                   state.chatQueue = [];
+                  state.chatRenderedMessageCount = 0;
                   state.resetToolStream();
                   state.resetChatScroll();
                   state.applySettings({
@@ -981,7 +982,10 @@ export function renderApp(state: AppViewState) {
                 compactionStatus: state.compactionStatus,
                 fallbackStatus: state.fallbackStatus,
                 assistantAvatarUrl: chatAvatarUrl,
-                messages: state.chatMessages,
+                messages: state.chatMessages.slice(
+                  Math.max(0, state.chatMessages.length - state.chatRenderedMessageCount),
+                  state.chatMessages.length,
+                ),
                 toolMessages: state.chatToolMessages,
                 streamSegments: state.chatStreamSegments,
                 stream: state.chatStream,
