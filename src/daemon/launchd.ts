@@ -403,14 +403,15 @@ export async function stopLaunchAgent({ stdout, env }: GatewayServiceControlArgs
       ? parseLaunchctlPrint(runtime.stdout || runtime.stderr || "").pid
       : undefined;
 
-  const res = await execLaunchctl(["bootout", `${domain}/${label}`]);
+  const serviceId = `${domain}/${label}`;
+  const res = await execLaunchctl(["stop", serviceId]);
   if (res.code !== 0 && !isLaunchctlNotLoaded(res)) {
-    throw new Error(`launchctl bootout failed: ${res.stderr || res.stdout}`.trim());
+    throw new Error(`launchctl stop failed: ${res.stderr || res.stdout}`.trim());
   }
   if (typeof previousPid === "number") {
     await terminateLaunchdPidWithSigterm(previousPid);
   }
-  stdout.write(`${formatLine("Stopped LaunchAgent", `${domain}/${label}`)}\n`);
+  stdout.write(`${formatLine("Stopped LaunchAgent", serviceId)}\n`);
 }
 
 export async function installLaunchAgent({

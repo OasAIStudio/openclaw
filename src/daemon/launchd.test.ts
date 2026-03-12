@@ -400,13 +400,13 @@ describe("launchd install", () => {
       expect(killSpy).toHaveBeenCalledWith(4242, 0);
       const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
       const serviceId = `${domain}/ai.openclaw.gateway`;
-      const bootoutIndex = state.launchctlCalls.findIndex(
-        (c) => c[0] === "bootout" && c[1] === serviceId,
+      const stopIndex = state.launchctlCalls.findIndex(
+        (c) => c[0] === "stop" && c[1] === serviceId,
       );
       const printIndex = state.launchctlCalls.findIndex((c) => c[0] === "print");
-      expect(bootoutIndex).toBeGreaterThanOrEqual(0);
+      expect(stopIndex).toBeGreaterThanOrEqual(0);
       expect(printIndex).toBeGreaterThanOrEqual(0);
-      expect(printIndex).toBeLessThan(bootoutIndex);
+      expect(printIndex).toBeLessThan(stopIndex);
     } finally {
       vi.useRealTimers();
       killSpy.mockRestore();
