@@ -356,36 +356,7 @@ type PreparedManualRun =
     }
   | { ok: false };
 
-type ManualRunDisposition =
-  | Extract<PreparedManualRun, { ran: false }>
-  | { ok: true; runnable: true };
-
 let nextManualRunId = 1;
-
-async function inspectManualRunDisposition(
-  state: CronServiceState,
-  id: string,
-  mode?: "due" | "force",
-): Promise<ManualRunDisposition | { ok: false }> {
-  return await locked(state, async () => {
-    warnIfDisabled(state, "run");
-    await ensureLoaded(state, { skipRecompute: true });
-    // Normalize job tick state (clears stale runningAtMs markers) before
-    // checking if already running, so a stale marker from a crashed Phase-1
-    // persist does not block manual triggers for up to STUCK_RUN_MS (#17554).
-    recomputeNextRunsForMaintenance(state);
-    const job = findJobOrThrow(state, id);
-    if (typeof job.state.runningAtMs === "number") {
-      return { ok: true, ran: false, reason: "already-running" as const };
-    }
-    const now = state.deps.nowMs();
-    const due = isJobDue(job, now, { forced: mode === "force" });
-    if (!due) {
-      return { ok: true, ran: false, reason: "not-due" as const };
-    }
-    return { ok: true, runnable: true } as const;
-  });
-}
 
 async function prepareManualRun(
   state: CronServiceState,
@@ -445,71 +416,155 @@ async function finishPreparedManualRun(
   }
   const endedAt = state.deps.nowMs();
 
+  try {
+    await locked(state, async () => {
+      await ensureLoaded(state, { skipRecompute: true });
+      const job = state.store?.jobs.find((entry) => entry.id === jobId);
+      if (!job) {
+        return;
+      }
+
+      const shouldDelete = applyJobResult(
+        state,
+        job,
+        {
+          status: coreResult.status,
+          error: coreResult.error,
+          delivered: coreResult.delivered,
+          startedAt,
+          endedAt,
+        },
+        { preserveSchedule: mode === "force" },
+      );
+
+      emit(state, {
+        jobId: job.id,
+        action: "finished",
+        status: coreResult.status,
+        error: coreResult.error,
+        summary: coreResult.summary,
+        delivered: coreResult.delivered,
+        deliveryStatus: job.state.lastDeliveryStatus,
+        deliveryError: job.state.lastDeliveryError,
+        sessionId: coreResult.sessionId,
+        sessionKey: coreResult.sessionKey,
+        runAtMs: startedAt,
+        durationMs: job.state.lastDurationMs,
+        nextRunAtMs: job.state.nextRunAtMs,
+        model: coreResult.model,
+        provider: coreResult.provider,
+        usage: coreResult.usage,
+      });
+
+      if (shouldDelete && state.store) {
+        state.store.jobs = state.store.jobs.filter((entry) => entry.id !== job.id);
+        emit(state, { jobId: job.id, action: "removed" });
+      }
+
+      // Manual runs should not advance other due jobs without executing them.
+      // Use maintenance-only recompute to repair missing values while
+      // preserving existing past-due nextRunAtMs entries for future timer ticks.
+      const postRunSnapshot = shouldDelete
+        ? null
+        : {
+            enabled: job.enabled,
+            updatedAtMs: job.updatedAtMs,
+            state: structuredClone(job.state),
+          };
+      const postRunRemoved = shouldDelete;
+      // Isolated Telegram send can persist target writeback directly to disk.
+      // Reload before final persist so manual `cron run` keeps those changes.
+      await ensureLoaded(state, { forceReload: true, skipRecompute: true });
+      mergeManualRunSnapshotAfterReload({
+        state,
+        jobId,
+        snapshot: postRunSnapshot,
+        removed: postRunRemoved,
+      });
+      recomputeNextRunsForMaintenance(state, { recomputeExpired: true });
+      await persist(state);
+      armTimer(state);
+    });
+  } catch (err) {
+    const recoveryStatus = `manual run finalization failed: ${String(err)}`;
+    state.deps.log.error(
+      { jobId, runId: prepared.jobId, err: String(err) },
+      "cron: manual run finalization failed, attempting recovery",
+    );
+
+    await locked(state, async () => {
+      await ensureLoaded(state, { skipRecompute: true });
+      const job = state.store?.jobs.find((entry) => entry.id === jobId);
+      if (!job) {
+        return;
+      }
+
+      applyJobResult(
+        state,
+        job,
+        {
+          status: "error",
+          error: recoveryStatus,
+          startedAt,
+          endedAt,
+        },
+        { preserveSchedule: mode === "force" },
+      );
+      emit(state, {
+        jobId: job.id,
+        action: "finished",
+        status: "error",
+        error: recoveryStatus,
+        runAtMs: startedAt,
+        durationMs: job.state.lastDurationMs,
+        nextRunAtMs: job.state.nextRunAtMs,
+      });
+      await persist(state);
+      armTimer(state);
+    });
+  }
+}
+
+async function recoverManualRunPreparation(
+  state: CronServiceState,
+  prepared: Extract<PreparedManualRun, { ran: true }>,
+  reason: string,
+  mode?: "due" | "force",
+): Promise<void> {
+  const startedAt = prepared.startedAt;
+  const jobId = prepared.jobId;
+  const endedAt = state.deps.nowMs();
+
   await locked(state, async () => {
     await ensureLoaded(state, { skipRecompute: true });
     const job = state.store?.jobs.find((entry) => entry.id === jobId);
     if (!job) {
       return;
     }
+    if (typeof job.state.runningAtMs === "number" && job.state.runningAtMs !== startedAt) {
+      return;
+    }
 
-    const shouldDelete = applyJobResult(
+    applyJobResult(
       state,
       job,
       {
-        status: coreResult.status,
-        error: coreResult.error,
-        delivered: coreResult.delivered,
+        status: "error",
+        error: reason,
         startedAt,
         endedAt,
       },
       { preserveSchedule: mode === "force" },
     );
-
     emit(state, {
       jobId: job.id,
       action: "finished",
-      status: coreResult.status,
-      error: coreResult.error,
-      summary: coreResult.summary,
-      delivered: coreResult.delivered,
-      deliveryStatus: job.state.lastDeliveryStatus,
-      deliveryError: job.state.lastDeliveryError,
-      sessionId: coreResult.sessionId,
-      sessionKey: coreResult.sessionKey,
+      status: "error",
+      error: reason,
       runAtMs: startedAt,
       durationMs: job.state.lastDurationMs,
       nextRunAtMs: job.state.nextRunAtMs,
-      model: coreResult.model,
-      provider: coreResult.provider,
-      usage: coreResult.usage,
     });
-
-    if (shouldDelete && state.store) {
-      state.store.jobs = state.store.jobs.filter((entry) => entry.id !== job.id);
-      emit(state, { jobId: job.id, action: "removed" });
-    }
-
-    // Manual runs should not advance other due jobs without executing them.
-    // Use maintenance-only recompute to repair missing values while
-    // preserving existing past-due nextRunAtMs entries for future timer ticks.
-    const postRunSnapshot = shouldDelete
-      ? null
-      : {
-          enabled: job.enabled,
-          updatedAtMs: job.updatedAtMs,
-          state: structuredClone(job.state),
-        };
-    const postRunRemoved = shouldDelete;
-    // Isolated Telegram send can persist target writeback directly to disk.
-    // Reload before final persist so manual `cron run` keeps those changes.
-    await ensureLoaded(state, { forceReload: true, skipRecompute: true });
-    mergeManualRunSnapshotAfterReload({
-      state,
-      jobId,
-      snapshot: postRunSnapshot,
-      removed: postRunRemoved,
-    });
-    recomputeNextRunsForMaintenance(state, { recomputeExpired: true });
     await persist(state);
     armTimer(state);
   });
@@ -525,23 +580,17 @@ export async function run(state: CronServiceState, id: string, mode?: "due" | "f
 }
 
 export async function enqueueRun(state: CronServiceState, id: string, mode?: "due" | "force") {
-  const disposition = await inspectManualRunDisposition(state, id, mode);
-  if (!disposition.ok || !("runnable" in disposition && disposition.runnable)) {
-    return disposition;
+  const prepared = await prepareManualRun(state, id, mode);
+  if (!prepared.ok || !prepared.ran) {
+    return prepared;
   }
 
   const runId = `manual:${id}:${state.deps.nowMs()}:${nextManualRunId++}`;
   void enqueueCommandInLane(
     CommandLane.Cron,
     async () => {
-      const result = await run(state, id, mode);
-      if (result.ok && "ran" in result && !result.ran) {
-        state.deps.log.info(
-          { jobId: id, runId, reason: result.reason },
-          "cron: queued manual run skipped before execution",
-        );
-      }
-      return result;
+      await finishPreparedManualRun(state, prepared, mode);
+      return { ok: true, ran: true } as const;
     },
     {
       warnAfterMs: 5_000,
@@ -553,6 +602,12 @@ export async function enqueueRun(state: CronServiceState, id: string, mode?: "du
       },
     },
   ).catch((err) => {
+    void recoverManualRunPreparation(state, prepared, String(err), mode).catch((recoveryErr) => {
+      state.deps.log.error(
+        { jobId: id, runId, err: String(recoveryErr) },
+        "cron: manual run recovery after queue failure failed",
+      );
+    });
     state.deps.log.error(
       { jobId: id, runId, err: String(err) },
       "cron: queued manual run background execution failed",
