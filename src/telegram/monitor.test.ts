@@ -316,6 +316,30 @@ describe("monitorTelegramProvider (grammY)", () => {
     expectRecoverableRetryState(2);
   });
 
+  it("logs polling connection lifecycle during reconnects", async () => {
+    const abort = new AbortController();
+    const networkError = makeRecoverableFetchError();
+    runSpy
+      .mockImplementationOnce(() =>
+        makeRunnerStub({
+          task: () => Promise.reject(networkError),
+        }),
+      )
+      .mockImplementationOnce(() => makeAbortRunner(abort));
+
+    await monitorTelegramProvider({ token: "tok", abortSignal: abort.signal });
+
+    const logLines = (consoleErrorSpy?.mock.calls ?? [])
+      .map((line) => String(line[0]))
+      .filter(Boolean);
+    expect(
+      logLines.some((line) => line.includes("[telegram] Starting Telegram polling cycle 1.")),
+    ).toBe(true);
+    expect(
+      logLines.some((line) => line.includes("Polling connection lost on cycle 1 (network error):")),
+    ).toBe(true);
+  });
+
   it("deletes webhook before starting polling", async () => {
     const abort = new AbortController();
     const order: string[] = [];

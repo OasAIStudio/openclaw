@@ -33,6 +33,7 @@ type TelegramPollingSessionOpts = {
 
 export class TelegramPollingSession {
   #restartAttempts = 0;
+  #hasObservedConnection = false;
   #webhookCleared = false;
   #forceRestarted = false;
   #activeRunner: ReturnType<typeof run> | undefined;
@@ -53,12 +54,23 @@ export class TelegramPollingSession {
   }
 
   async runUntilAbort(): Promise<void> {
+    let cycle = 0;
     while (!this.opts.abortSignal?.aborted) {
+      cycle += 1;
+      const hasReconnectHistory = this.#restartAttempts > 0;
+      this.opts.log(
+        hasReconnectHistory
+          ? `[telegram] Starting Telegram polling cycle ${cycle} (reconnecting, attempt #${this.#restartAttempts}).`
+          : `[telegram] Starting Telegram polling cycle ${cycle}.`,
+      );
+      this.#hasObservedConnection = false;
+
       const bot = await this.#createPollingBot();
       if (!bot) {
         continue;
       }
 
+      this.opts.log("[telegram] Long-polling runner bootstrapping.");
       const cleanupState = await this.#ensureWebhookCleanup(bot);
       if (cleanupState === "retry") {
         continue;
@@ -67,7 +79,7 @@ export class TelegramPollingSession {
         return;
       }
 
-      const state = await this.#runPollingCycle(bot);
+      const state = await this.#runPollingCycle(bot, cycle);
       if (state === "exit") {
         return;
       }
@@ -160,17 +172,29 @@ export class TelegramPollingSession {
     }
   }
 
-  async #runPollingCycle(bot: TelegramBot): Promise<"continue" | "exit"> {
+  async #runPollingCycle(bot: TelegramBot, cycle: number): Promise<"continue" | "exit"> {
+    let observedGetUpdates = false;
+    let hadNetworkIssue = false;
+    let hadSuccessfulGetUpdates = false;
+
     await this.#confirmPersistedOffset(bot);
 
     let lastGetUpdatesAt = Date.now();
     bot.api.config.use((prev, method, payload, signal) => {
       if (method === "getUpdates") {
         lastGetUpdatesAt = Date.now();
+        if (!observedGetUpdates) {
+          observedGetUpdates = true;
+          hadSuccessfulGetUpdates = true;
+          this.#hasObservedConnection = true;
+          this.#restartAttempts = 0;
+          this.opts.log(`[telegram] Polling connection active on cycle ${cycle}.`);
+        }
       }
       return prev(method, payload, signal);
     });
 
+    this.opts.log(`[telegram] Polling cycle ${cycle} started; awaiting updates.`);
     const runner = run(bot, this.opts.runnerOptions);
     this.#activeRunner = runner;
     const fetchAbortController = this.#activeFetchAbort;
@@ -215,6 +239,11 @@ export class TelegramPollingSession {
     this.opts.abortSignal?.addEventListener("abort", stopOnAbort, { once: true });
     try {
       await runner.task();
+      if (!this.opts.abortSignal?.aborted && !observedGetUpdates) {
+        this.opts.log(
+          `[telegram] Polling cycle ${cycle} ended before any update requests were observed.`,
+        );
+      }
       if (this.opts.abortSignal?.aborted) {
         return "exit";
       }
@@ -223,6 +252,17 @@ export class TelegramPollingSession {
         : this.#forceRestarted
           ? "unhandled network error"
           : "runner stopped (maxRetryTime exceeded or graceful stop)";
+      const connectionState = observedGetUpdates
+        ? "connection was active"
+        : "connection not established";
+      const recoveryState = hadSuccessfulGetUpdates
+        ? "reconnect history reset"
+        : "reconnect history retained";
+      this.opts.log(
+        `[telegram] Polling cycle ${cycle} completed (${connectionState}); ${recoveryState}; restarting in ${formatDurationPrecise(
+          computeBackoff(TELEGRAM_POLL_RESTART_POLICY, this.#restartAttempts + 1),
+        )}.`,
+      );
       this.#forceRestarted = false;
       const shouldRestart = await this.#waitBeforeRestart(
         (delay) => `Telegram polling runner stopped (${reason}); restarting in ${delay}.`,
@@ -233,6 +273,7 @@ export class TelegramPollingSession {
       if (this.opts.abortSignal?.aborted) {
         throw err;
       }
+      hadNetworkIssue = true;
       const isConflict = isGetUpdatesConflict(err);
       if (isConflict) {
         this.#webhookCleared = false;
@@ -243,6 +284,11 @@ export class TelegramPollingSession {
       }
       const reason = isConflict ? "getUpdates conflict" : "network error";
       const errMsg = formatErrorMessage(err);
+      this.opts.log(
+        `[telegram] Polling connection lost on cycle ${cycle} (${reason}): ${errMsg}; ${formatDurationPrecise(
+          computeBackoff(TELEGRAM_POLL_RESTART_POLICY, this.#restartAttempts + 1),
+        )} backoff.`,
+      );
       const shouldRestart = await this.#waitBeforeRestart(
         (delay) => `Telegram ${reason}: ${errMsg}; retrying in ${delay}.`,
       );
@@ -255,6 +301,16 @@ export class TelegramPollingSession {
       this.#activeRunner = undefined;
       if (this.#activeFetchAbort === fetchAbortController) {
         this.#activeFetchAbort = undefined;
+      }
+      if (this.opts.abortSignal?.aborted) {
+        this.opts.log(`[telegram] Polling cycle ${cycle} shutting down.`);
+      } else if (!hadNetworkIssue) {
+        this.opts.log(`[telegram] Polling cycle ${cycle} cleaned up.`);
+        if (!this.#hasObservedConnection) {
+          this.opts.log(
+            `[telegram] Polling cycle ${cycle} had no successful getUpdates requests before cleanup; reconnecting soon.`,
+          );
+        }
       }
     }
   }

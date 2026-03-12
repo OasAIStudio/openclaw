@@ -84,13 +84,21 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
     }
 
     const activeRunner = pollingSession?.activeRunner;
-    if (isNetworkError && activeRunner && activeRunner.isRunning()) {
+    if (isNetworkError) {
       pollingSession?.markForceRestarted();
       pollingSession?.abortActiveFetch();
-      void activeRunner.stop().catch(() => {});
-      log(
-        `[telegram] Restarting polling after unhandled network error: ${formatErrorMessage(err)}`,
-      );
+      if (activeRunner?.isRunning()) {
+        void activeRunner.stop().catch(() => {});
+        log(
+          `[telegram] Restarting polling after unhandled network error: ${formatErrorMessage(err)}`,
+        );
+      } else {
+        log(
+          `[telegram] Scheduling polling restart after unhandled network error: ${formatErrorMessage(
+            err,
+          )}`,
+        );
+      }
       return true;
     }
 
