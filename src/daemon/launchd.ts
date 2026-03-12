@@ -402,12 +402,7 @@ export async function stopLaunchAgent({ stdout, env }: GatewayServiceControlArgs
     runtime.code === 0
       ? parseLaunchctlPrint(runtime.stdout || runtime.stderr || "").pid
       : undefined;
-
   const serviceId = `${domain}/${label}`;
-  const res = await execLaunchctl(["stop", serviceId]);
-  if (res.code !== 0 && !isLaunchctlNotLoaded(res)) {
-    throw new Error(`launchctl stop failed: ${res.stderr || res.stdout}`.trim());
-  }
   if (typeof previousPid === "number") {
     await terminateLaunchdPidWithSigterm(previousPid);
   }
