@@ -33,6 +33,160 @@ export function stripMinimaxToolCallXml(text: string): string {
   return cleaned;
 }
 
+type KimiFunctionCallToolBlock = {
+  type: "toolCall";
+  name: string;
+  arguments: Record<string, string>;
+};
+
+type KimiFunctionCallParseResult = {
+  text: string;
+  toolCalls: KimiFunctionCallToolBlock[];
+};
+
+const KIMI_INVOKE_RE = /<invoke\b[^>]*\bname\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/invoke>/gi;
+const KIMI_PARAMETER_RE =
+  /<parameter\b[^>]*\bname\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/parameter>/gi;
+
+function decodeXmlEscapes(value: string): string {
+  return value
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#(\d+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 10)));
+}
+
+function parseKimiParameters(xml: string): Record<string, string> {
+  const args: Record<string, string> = {};
+  for (const match of xml.matchAll(KIMI_PARAMETER_RE)) {
+    const rawName = match[2];
+    const rawValue = match[3] ?? "";
+    const name = rawName?.trim();
+    if (!name) {
+      continue;
+    }
+    args[name] = decodeXmlEscapes(rawValue).trim();
+  }
+  return args;
+}
+
+export function parseKimiFunctionCallsFromXml(text: string): KimiFunctionCallParseResult {
+  if (!text || !/<invoke\b/i.test(text)) {
+    return { text, toolCalls: [] };
+  }
+
+  const toolCalls: KimiFunctionCallToolBlock[] = [];
+  const cleanedParts: string[] = [];
+  let cursor = 0;
+  let matched = false;
+
+  for (const match of text.matchAll(KIMI_INVOKE_RE)) {
+    matched = true;
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    cleanedParts.push(text.slice(cursor, start));
+    cursor = end;
+
+    const rawName = match[2];
+    const name = rawName?.trim();
+    if (!name) {
+      continue;
+    }
+
+    const argumentsBody = match[3] ?? "";
+    toolCalls.push({
+      type: "toolCall",
+      name,
+      arguments: parseKimiParameters(argumentsBody),
+    });
+  }
+
+  if (!matched) {
+    return { text, toolCalls: [] };
+  }
+
+  cleanedParts.push(text.slice(cursor));
+  return {
+    text: cleanedParts.join(""),
+    toolCalls,
+  };
+}
+
+export function rewriteKimiXmlToolCallsInMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") {
+    const parsed = parseKimiFunctionCallsFromXml(content);
+    if (!parsed.toolCalls.length) {
+      if (parsed.text === content) {
+        return false;
+      }
+      (message as { content: string }).content = parsed.text;
+      return true;
+    }
+
+    const nextContent: unknown[] = [];
+    if (parsed.text.length > 0) {
+      nextContent.push({ type: "text", text: parsed.text });
+    }
+    for (const toolCall of parsed.toolCalls) {
+      nextContent.push(toolCall);
+    }
+
+    (message as { content: unknown[] }).content = nextContent;
+    return true;
+  }
+  if (!Array.isArray(content)) {
+    return false;
+  }
+
+  let changed = false;
+  const nextContent: unknown[] = [];
+
+  for (const block of content) {
+    if (!block || typeof block !== "object" || (block as { type?: unknown }).type !== "text") {
+      nextContent.push(block);
+      continue;
+    }
+    const typedBlock = block as { text?: unknown };
+    if (typeof typedBlock.text !== "string") {
+      nextContent.push(block);
+      continue;
+    }
+
+    const parsed = parseKimiFunctionCallsFromXml(typedBlock.text);
+    if (parsed.toolCalls.length > 0) {
+      const cleaned = parsed.text;
+      if (cleaned.length > 0) {
+        nextContent.push({ ...(block as Record<string, unknown>), text: cleaned });
+      }
+      for (const toolCall of parsed.toolCalls) {
+        nextContent.push(toolCall);
+      }
+      changed = true;
+      continue;
+    }
+    if (parsed.text !== typedBlock.text) {
+      nextContent.push({ ...(block as Record<string, unknown>), text: parsed.text });
+      changed = true;
+      continue;
+    }
+    nextContent.push(block);
+  }
+
+  if (!changed) {
+    return false;
+  }
+  (message as { content: unknown[] }).content = nextContent;
+  return true;
+}
+
 /**
  * Strip model control tokens leaked into assistant text output.
  *

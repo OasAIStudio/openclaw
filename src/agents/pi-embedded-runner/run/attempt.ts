@@ -67,6 +67,7 @@ import {
   validateGeminiTurns,
 } from "../../pi-embedded-helpers.js";
 import { subscribeEmbeddedPiSession } from "../../pi-embedded-subscribe.js";
+import { rewriteKimiXmlToolCallsInMessage } from "../../pi-embedded-utils.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../../pi-project-settings.js";
 import { applyPiAutoCompactionGuard } from "../../pi-settings.js";
 import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
@@ -300,6 +301,17 @@ function isToolCallBlockType(type: unknown): boolean {
   return type === "toolCall" || type === "toolUse" || type === "functionCall";
 }
 
+function isKimiCodingXmlToolCallProvider(
+  provider?: string | null,
+  modelId?: string | null,
+): boolean {
+  if (normalizeProviderId(provider ?? "") === "kimi-coding") {
+    return true;
+  }
+  const modelHint = (modelId ?? "").toLowerCase();
+  return modelHint.includes("k2p5") || modelHint.includes("kimi");
+}
+
 function normalizeToolCallIdsInMessage(message: unknown): void {
   if (!message || typeof message !== "object") {
     return;
@@ -433,6 +445,57 @@ export function wrapStreamFnTrimToolCallNames(
       );
     }
     return wrapStreamTrimToolCallNames(maybeStream, allowedToolNames);
+  };
+}
+
+function wrapStreamRewriteKimiToolCallXml(
+  stream: ReturnType<typeof streamSimple>,
+): ReturnType<typeof streamSimple> {
+  const originalResult = stream.result.bind(stream);
+  stream.result = async () => {
+    const message = await originalResult();
+    rewriteKimiXmlToolCallsInMessage(message);
+    return message;
+  };
+
+  const originalAsyncIterator = stream[Symbol.asyncIterator].bind(stream);
+  (stream as { [Symbol.asyncIterator]: typeof originalAsyncIterator })[Symbol.asyncIterator] =
+    function () {
+      const iterator = originalAsyncIterator();
+      return {
+        async next() {
+          const result = await iterator.next();
+          if (!result.done && result.value && typeof result.value === "object") {
+            const event = result.value as {
+              partial?: unknown;
+              message?: unknown;
+            };
+            rewriteKimiXmlToolCallsInMessage(event.partial);
+            rewriteKimiXmlToolCallsInMessage(event.message);
+          }
+          return result;
+        },
+        async return(value?: unknown) {
+          return iterator.return?.(value) ?? { done: true as const, value: undefined };
+        },
+        async throw(error?: unknown) {
+          return iterator.throw?.(error) ?? { done: true as const, value: undefined };
+        },
+      };
+    };
+
+  return stream;
+}
+
+export function wrapStreamFnRewriteKimiToolCallXml(baseFn: StreamFn): StreamFn {
+  return (model, context, options) => {
+    const maybeStream = baseFn(model, context, options);
+    if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
+      return Promise.resolve(maybeStream).then((stream) =>
+        wrapStreamRewriteKimiToolCallXml(stream),
+      );
+    }
+    return wrapStreamRewriteKimiToolCallXml(maybeStream);
   };
 }
 
@@ -1374,6 +1437,11 @@ export async function runEmbeddedAttempt(
       // Some models emit tool names with surrounding whitespace (e.g. " read ").
       // pi-agent-core dispatches tool calls with exact string matching, so normalize
       // names on the live response stream before tool execution.
+      if (isKimiCodingXmlToolCallProvider(params.provider, params.modelId)) {
+        activeSession.agent.streamFn = wrapStreamFnRewriteKimiToolCallXml(
+          activeSession.agent.streamFn,
+        );
+      }
       activeSession.agent.streamFn = wrapStreamFnTrimToolCallNames(
         activeSession.agent.streamFn,
         allowedToolNames,

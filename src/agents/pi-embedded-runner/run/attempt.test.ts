@@ -13,6 +13,7 @@ import {
   shouldInjectOllamaCompatNumCtx,
   decodeHtmlEntitiesInObject,
   wrapOllamaCompatNumCtx,
+  wrapStreamFnRewriteKimiToolCallXml,
   wrapStreamFnTrimToolCallNames,
 } from "./attempt.js";
 
@@ -427,6 +428,110 @@ describe("wrapStreamFnTrimToolCallNames", () => {
 
     expect(finalToolCall.name).toBe("read");
     expect(finalToolCall.id).toBe("call_42");
+  });
+});
+
+describe("wrapStreamFnRewriteKimiToolCallXml", () => {
+  it("rewrites XML function calls into toolCall blocks before tool dispatch", async () => {
+    const partialToolCallText = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: `<invoke name="exec"><parameter name="command">pwd</parameter></invoke>`,
+        },
+      ],
+    };
+    const resultMessage = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: `Let&apos;s go.
+<function_calls><invoke name="exec"><parameter name="command">cat ~/.openclaw/logs/cron.log</parameter></invoke></function_calls>Done`,
+        },
+      ],
+    };
+
+    const baseFn = vi.fn(() =>
+      createFakeStream({
+        events: [{ partial: partialToolCallText }],
+        resultMessage,
+      }),
+    );
+
+    const wrapped = wrapStreamFnRewriteKimiToolCallXml(baseFn as never);
+    const stream = await wrapped({} as never, {} as never, {} as never);
+    for await (const _item of stream) {
+      // drain
+    }
+    const result = await stream.result();
+
+    expect(partialToolCallText.content).toEqual([
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: { command: "pwd" },
+      },
+    ]);
+    expect((result as { content: Array<{ type: string }> }).content).toEqual([
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: { command: "cat ~/.openclaw/logs/cron.log" },
+      },
+    ]);
+    expect(baseFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("rewrites XML function calls when content is a plain string", async () => {
+    const partialToolCallText = {
+      role: "assistant",
+      content:
+        '<invoke name="exec"><parameter name="command">cat ~/.openclaw/logs/cron.log</parameter></invoke>',
+    };
+    const resultMessage = {
+      role: "assistant",
+      content: `Let's inspect.
+<function_calls><invoke name="exec"><parameter name="command">uname -a</parameter></invoke></function_calls>Done`,
+    };
+
+    const baseFn = vi.fn(() =>
+      createFakeStream({
+        events: [{ partial: partialToolCallText }],
+        resultMessage,
+      }),
+    );
+
+    const wrapped = wrapStreamFnRewriteKimiToolCallXml(baseFn as never);
+    const stream = await wrapped({} as never, {} as never, {} as never);
+    for await (const _item of stream) {
+      // drain
+    }
+    const result = await stream.result();
+
+    expect(partialToolCallText.content).toEqual([
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: { command: "cat ~/.openclaw/logs/cron.log" },
+      },
+    ]);
+    expect(result).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "Let's inspect.\nDone",
+        },
+        {
+          type: "toolCall",
+          name: "exec",
+          arguments: { command: "uname -a" },
+        },
+      ],
+    });
+    expect(baseFn).toHaveBeenCalledTimes(1);
   });
 });
 

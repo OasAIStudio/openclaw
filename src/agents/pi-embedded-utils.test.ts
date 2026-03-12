@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   extractAssistantText,
   formatReasoningMessage,
+  rewriteKimiXmlToolCallsInMessage,
   promoteThinkingTagsToBlocks,
+  parseKimiFunctionCallsFromXml,
   stripDowngradedToolCallText,
 } from "./pi-embedded-utils.js";
 
@@ -472,6 +474,89 @@ File contents here`,
       });
       expect(extractAssistantText(msg), testCase.name).toBe(testCase.expected);
     }
+  });
+});
+
+describe("parseKimiFunctionCallsFromXml", () => {
+  it("extracts a single invoke block and preserves text", () => {
+    const result = parseKimiFunctionCallsFromXml(
+      `Hello.<function_calls>\n  <invoke name="exec">\n    <parameter name="command">cat ~/.openclaw/logs/cron.log</parameter>\n  </invoke>\n</function_calls>World`,
+    );
+
+    expect(result.text).toBe("Hello.World");
+    expect(result.toolCalls).toEqual([
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: {
+          command: "cat ~/.openclaw/logs/cron.log",
+        },
+      },
+    ]);
+  });
+
+  it("extracts multiple invoke blocks while removing them from text", () => {
+    const result = parseKimiFunctionCallsFromXml(
+      `Before<invoke name="Read">\n<parameter name="path">/tmp/file1.txt</parameter>\n</invoke>Middle<invoke name="exec">\n<parameter name="command">pwd</parameter>\n</invoke>After`,
+    );
+
+    expect(result.text).toBe("BeforeMiddleAfter");
+    expect(result.toolCalls).toEqual([
+      {
+        type: "toolCall",
+        name: "Read",
+        arguments: {
+          path: "/tmp/file1.txt",
+        },
+      },
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: {
+          command: "pwd",
+        },
+      },
+    ]);
+  });
+
+  it("decodes escaped parameter values", () => {
+    const result = parseKimiFunctionCallsFromXml(
+      `<invoke name="exec"><parameter name="command">echo &quot;done&quot; &amp;&amp; ls &lt;1&gt;</parameter></invoke>`,
+    );
+
+    expect(result.toolCalls).toEqual([
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: {
+          command: 'echo "done" && ls <1>',
+        },
+      },
+    ]);
+    expect(result.text).toBe("");
+  });
+});
+
+describe("rewriteKimiXmlToolCallsInMessage", () => {
+  it("converts string assistant content with Kimi XML into toolCall blocks", () => {
+    const message: Record<string, unknown> = {
+      role: "assistant",
+      content: '<invoke name="exec"><parameter name="command">pwd</parameter></invoke>',
+    };
+
+    const changed = rewriteKimiXmlToolCallsInMessage(message);
+
+    expect(changed).toBe(true);
+    expect(message).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "exec",
+          arguments: { command: "pwd" },
+        },
+      ],
+    });
   });
 });
 
