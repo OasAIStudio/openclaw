@@ -716,7 +716,7 @@ describe("web_search kimi provider", () => {
                   tool_calls: [
                     {
                       id: "call_1",
-                      type: "function",
+                      type: "builtin_function",
                       function: {
                         name: "$web_search",
                         arguments: JSON.stringify({ q: "openclaw" }),
@@ -752,6 +752,16 @@ describe("web_search kimi provider", () => {
     const result = await tool?.execute?.("call-1", { query: "latest openclaw release" });
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
+    const firstRequest = mockFetch.mock.calls[0]?.[1];
+    const firstBody = JSON.parse(
+      typeof firstRequest?.body === "string" ? firstRequest.body : "{}",
+    ) as {
+      tools?: Array<Record<string, unknown>>;
+    };
+    expect(firstBody.tools?.[0]).toMatchObject({
+      type: "builtin_function",
+      function: { name: "$web_search" },
+    });
     const secondRequest = mockFetch.mock.calls[1]?.[1];
     const secondBody = JSON.parse(
       typeof secondRequest?.body === "string" ? secondRequest.body : "{}",

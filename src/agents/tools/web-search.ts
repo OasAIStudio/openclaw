@@ -366,12 +366,20 @@ type GrokSearchResponse = {
 
 type KimiToolCall = {
   id?: string;
-  type?: string;
+  type?: "builtin_function" | "function";
   function?: {
     name?: string;
     arguments?: string;
   };
 };
+
+function isKimiWebSearchToolCall(toolCall: KimiToolCall | undefined): boolean {
+  const name = toolCall?.function?.name;
+  if (name !== "$web_search") {
+    return false;
+  }
+  return toolCall?.type !== "function";
+}
 
 type KimiMessage = {
   role?: string;
@@ -1374,6 +1382,9 @@ function extractKimiCitations(data: KimiSearchResponse): string[] {
     .filter((url): url is string => Boolean(url));
 
   for (const toolCall of data.choices?.[0]?.message?.tool_calls ?? []) {
+    if (!isKimiWebSearchToolCall(toolCall)) {
+      continue;
+    }
     const rawArguments = toolCall.function?.arguments;
     if (!rawArguments) {
       continue;
@@ -1460,8 +1471,9 @@ async function runKimiSearch(params: {
         const message = choice?.message;
         const text = extractKimiMessageText(message);
         const toolCalls = message?.tool_calls ?? [];
+        const kimiToolCalls = toolCalls.filter(isKimiWebSearchToolCall);
 
-        if (choice?.finish_reason !== "tool_calls" || toolCalls.length === 0) {
+        if (choice?.finish_reason !== "tool_calls" || kimiToolCalls.length === 0) {
           return { done: true, content: text ?? "No response", citations: [...collectedCitations] };
         }
 
@@ -1473,12 +1485,12 @@ async function runKimiSearch(params: {
                 reasoning_content: message.reasoning_content,
               }
             : {}),
-          tool_calls: toolCalls,
+          tool_calls: kimiToolCalls,
         });
 
         const toolContent = buildKimiToolResultContent(data);
         let pushedToolResult = false;
-        for (const toolCall of toolCalls) {
+        for (const toolCall of kimiToolCalls) {
           const toolCallId = toolCall.id?.trim();
           if (!toolCallId) {
             continue;
