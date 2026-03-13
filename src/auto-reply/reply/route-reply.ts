@@ -25,11 +25,17 @@ let deliverRuntimePromise: Promise<
 > | null = null;
 const ROUTE_REPLY_DEDUPE_TTL_MS = 60_000;
 const ROUTE_REPLY_DEDUPE_MAX_SIZE = 10_000;
+const ROUTE_REPLY_DEDUPE_WITHOUT_MESSAGE_ID_TTL_MS = 5_000;
 const routeReplyDedupeCache = createDedupeCache({
   ttlMs: ROUTE_REPLY_DEDUPE_TTL_MS,
   maxSize: ROUTE_REPLY_DEDUPE_MAX_SIZE,
 });
 const routeReplyDedupeInProgress = new Set<string>();
+const routeReplyDedupeWithoutMessageIdCache = createDedupeCache({
+  ttlMs: ROUTE_REPLY_DEDUPE_WITHOUT_MESSAGE_ID_TTL_MS,
+  maxSize: ROUTE_REPLY_DEDUPE_MAX_SIZE,
+});
+const routeReplyDedupeWithoutMessageIdInProgress = new Set<string>();
 
 const buildRouteReplyPayloadFingerprint = (payload: ReplyPayload): string => {
   const normalizedPayload = {
@@ -45,6 +51,24 @@ const buildRouteReplyPayloadFingerprint = (payload: ReplyPayload): string => {
     channelData: payload.channelData ?? null,
   };
   return createHash("sha256").update(JSON.stringify(normalizedPayload)).digest("hex");
+};
+
+const normalizeRouteReplyTo = (to: string, channel: string): string => {
+  const normalizedTo = to.trim();
+  const explicitPrefix = normalizedTo.split(":")[0]?.trim();
+  if (!explicitPrefix) {
+    return normalizedTo;
+  }
+  const resolvedPrefix = normalizeMessageChannel(explicitPrefix);
+  if (!resolvedPrefix || resolvedPrefix === INTERNAL_MESSAGE_CHANNEL) {
+    return normalizedTo;
+  }
+  if (resolvedPrefix === normalizeMessageChannel(channel)) {
+    return normalizedTo.slice(explicitPrefix.length + 1).trim();
+  }
+  // If the channel is explicitly embedded and differs from the requested channel,
+  // keep the full target string to avoid collapsing distinct routed channels.
+  return normalizedTo;
 };
 
 const resolveRouteReplyTargetChannel = (params: {
@@ -65,7 +89,7 @@ const buildRouteReplyTargetFingerprint = (params: {
   accountId?: string;
   threadId?: string | number;
 }): string => {
-  const normalizedTo = params.to.trim();
+  const normalizedTo = normalizeRouteReplyTo(params.to, params.channel);
   const channel = resolveRouteReplyTargetChannel({
     channel: params.channel,
     to: normalizedTo,
@@ -100,6 +124,29 @@ const buildRouteReplyDedupeKey = (params: {
   });
 };
 
+const buildRouteReplyDedupeWithoutMessageIdKey = (params: {
+  sessionKey?: string;
+  channel: OriginatingChannelType;
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+  payload: ReplyPayload;
+}): string => {
+  const payloadFingerprint = buildRouteReplyPayloadFingerprint(params.payload);
+  const targetFingerprint = buildRouteReplyTargetFingerprint({
+    channel: params.channel,
+    to: params.to,
+    accountId: params.accountId,
+    threadId: params.threadId,
+  });
+  return JSON.stringify({
+    type: "route-reply-no-message-id",
+    sessionKey: params.sessionKey ?? "",
+    targetFingerprint,
+    payloadFingerprint,
+  });
+};
+
 const tryReserveRouteReplyDedupKey = (key: string): boolean => {
   if (routeReplyDedupeInProgress.has(key)) {
     return false;
@@ -111,13 +158,30 @@ const tryReserveRouteReplyDedupKey = (key: string): boolean => {
   return true;
 };
 
+const tryReserveRouteReplyWithoutMessageIdDedupKey = (key: string): boolean => {
+  if (routeReplyDedupeWithoutMessageIdInProgress.has(key)) {
+    return false;
+  }
+  if (routeReplyDedupeWithoutMessageIdCache.peek(key)) {
+    return false;
+  }
+  routeReplyDedupeWithoutMessageIdInProgress.add(key);
+  return true;
+};
+
 const releaseRouteReplyDedupKey = (key: string): void => {
   routeReplyDedupeInProgress.delete(key);
+};
+
+const releaseRouteReplyWithoutMessageIdDedupKey = (key: string): void => {
+  routeReplyDedupeWithoutMessageIdInProgress.delete(key);
 };
 
 export function resetRouteReplyDedupeForTests(): void {
   routeReplyDedupeCache.clear();
   routeReplyDedupeInProgress.clear();
+  routeReplyDedupeWithoutMessageIdCache.clear();
+  routeReplyDedupeWithoutMessageIdInProgress.clear();
 }
 
 function loadDeliverRuntime() {
@@ -201,6 +265,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
   }
 
   let dedupeKey: string | undefined;
+  let fallbackDedupeKey: string | undefined;
   if (messageId) {
     dedupeKey = buildRouteReplyDedupeKey({
       messageId,
@@ -212,6 +277,18 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       payload: normalized,
     });
     if (!tryReserveRouteReplyDedupKey(dedupeKey)) {
+      return { ok: true };
+    }
+  } else if (params.sessionKey) {
+    fallbackDedupeKey = buildRouteReplyDedupeWithoutMessageIdKey({
+      sessionKey: params.sessionKey,
+      channel: normalizedChannel ?? channel,
+      to: to.trim(),
+      accountId,
+      threadId,
+      payload: normalized,
+    });
+    if (!tryReserveRouteReplyWithoutMessageIdDedupKey(fallbackDedupeKey)) {
       return { ok: true };
     }
   }
@@ -228,6 +305,9 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
   if (!text.trim() && mediaUrls.length === 0) {
     if (dedupeKey) {
       releaseRouteReplyDedupKey(dedupeKey);
+    }
+    if (fallbackDedupeKey) {
+      releaseRouteReplyWithoutMessageIdDedupKey(fallbackDedupeKey);
     }
     return { ok: true };
   }
@@ -287,6 +367,8 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
     const last = results.at(-1);
     if (dedupeKey) {
       routeReplyDedupeCache.check(dedupeKey);
+    } else if (fallbackDedupeKey) {
+      routeReplyDedupeWithoutMessageIdCache.check(fallbackDedupeKey);
     }
     return { ok: true, messageId: last?.messageId };
   } catch (err) {
@@ -298,6 +380,9 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
   } finally {
     if (dedupeKey) {
       releaseRouteReplyDedupKey(dedupeKey);
+    }
+    if (fallbackDedupeKey) {
+      releaseRouteReplyWithoutMessageIdDedupKey(fallbackDedupeKey);
     }
   }
 }

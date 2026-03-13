@@ -456,6 +456,46 @@ describe("routeReply", () => {
     expect(mocks.sendMessageSlack).toHaveBeenCalledTimes(0);
   });
 
+  it("deduplicates identical route replies for the same session and target when messageId is missing", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([]);
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "imessage",
+      to: "imessage:+15550009999",
+      sessionKey: "agent:main:main",
+      cfg: {} as never,
+    });
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "slack",
+      to: "imessage:+15550009999",
+      sessionKey: "agent:main:main",
+      cfg: {} as never,
+    });
+    expect(mocks.sendMessageIMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.sendMessageSlack).toHaveBeenCalledTimes(0);
+  });
+
+  it("does not dedupe route replies when payload differs and messageId is missing", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([]);
+    await routeReply({
+      payload: { text: "first" },
+      channel: "slack",
+      to: "imessage:+15550009999",
+      sessionKey: "agent:main:main",
+      cfg: {} as never,
+    });
+    await routeReply({
+      payload: { text: "second" },
+      channel: "imessage",
+      to: "imessage:+15550009999",
+      sessionKey: "agent:main:main",
+      cfg: {} as never,
+    });
+    expect(mocks.sendMessageIMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.sendMessageSlack).toHaveBeenCalledTimes(1);
+  });
+
   it("does not dedupe route replies with different inbound message ids", async () => {
     mocks.deliverOutboundPayloads.mockResolvedValue([]);
     await routeReply({
