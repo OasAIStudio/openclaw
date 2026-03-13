@@ -202,6 +202,97 @@ describe("resolveMedia getFile retry", () => {
     expect(getFile).toHaveBeenCalledTimes(1);
   });
 
+  it("retries Telegram media download by disabling pinned DNS after TypeError fetch failures", async () => {
+    const getFile = vi.fn().mockResolvedValue({ file_path: "voice/file_0.oga" });
+    fetchRemoteMedia.mockRejectedValueOnce({
+      code: "fetch_failed",
+      message: `Failed to fetch media from https://api.telegram.org/file/bot${BOT_TOKEN}/voice/file_0.oga: TypeError: fetch failed`,
+    });
+    fetchRemoteMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("audio"),
+      contentType: "audio/ogg",
+      fileName: "file_0.oga",
+    });
+    saveMediaBuffer.mockResolvedValueOnce({
+      path: "/tmp/file_0.oga",
+      contentType: "audio/ogg",
+    });
+
+    const result = await resolveMedia(makeCtx("voice", getFile), MAX_MEDIA_BYTES, BOT_TOKEN);
+
+    expect(result).toEqual(
+      expect.objectContaining({ path: "/tmp/file_0.oga", placeholder: "<media:audio>" }),
+    );
+    expect(fetchRemoteMedia).toHaveBeenCalledTimes(2);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/voice/file_0.oga`;
+    expect(fetchRemoteMedia).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        url: fileUrl,
+        ssrfPolicy: {
+          allowRfc2544BenchmarkRange: true,
+          allowedHostnames: ["api.telegram.org"],
+        },
+      }),
+    );
+    expect(fetchRemoteMedia).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        url: fileUrl,
+        pinDns: false,
+        ssrfPolicy: {
+          allowRfc2544BenchmarkRange: true,
+          allowedHostnames: ["api.telegram.org"],
+        },
+      }),
+    );
+  });
+
+  it("retries Telegram media download by disabling pinned DNS when TypeError fetch failure has no code", async () => {
+    const getFile = vi.fn().mockResolvedValue({ file_path: "voice/file_0.oga" });
+    fetchRemoteMedia.mockRejectedValueOnce({
+      message: `Failed to fetch media from https://api.telegram.org/file/bot${BOT_TOKEN}/voice/file_0.oga: TypeError: fetch failed`,
+    });
+    fetchRemoteMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("audio"),
+      contentType: "audio/ogg",
+      fileName: "file_0.oga",
+    });
+    saveMediaBuffer.mockResolvedValueOnce({
+      path: "/tmp/file_0.oga",
+      contentType: "audio/ogg",
+    });
+
+    const result = await resolveMedia(makeCtx("voice", getFile), MAX_MEDIA_BYTES, BOT_TOKEN);
+
+    expect(result).toEqual(
+      expect.objectContaining({ path: "/tmp/file_0.oga", placeholder: "<media:audio>" }),
+    );
+    expect(fetchRemoteMedia).toHaveBeenCalledTimes(2);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/voice/file_0.oga`;
+    expect(fetchRemoteMedia).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        url: fileUrl,
+        ssrfPolicy: {
+          allowRfc2544BenchmarkRange: true,
+          allowedHostnames: ["api.telegram.org"],
+        },
+      }),
+    );
+    expect(fetchRemoteMedia).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        url: fileUrl,
+        pinDns: false,
+        ssrfPolicy: {
+          allowRfc2544BenchmarkRange: true,
+          allowedHostnames: ["api.telegram.org"],
+        },
+      }),
+    );
+  });
+
   it("does not retry 'file is too big' error (400 Bad Request) and returns null", async () => {
     // Simulate Telegram Bot API error when file exceeds 20MB limit.
     const fileTooBigError = createFileTooBigError();

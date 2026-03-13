@@ -61,6 +61,52 @@ function resolveTelegramFileName(msg: TelegramContext["message"]): string | unde
   );
 }
 
+function isPinnedDnsFetchFallbackCandidate(err: unknown): err is {
+  code?: string;
+  message?: string;
+} {
+  if (!err || typeof err !== "object") {
+    return false;
+  }
+  const message = String((err as { message?: unknown }).message);
+  if (!message.includes("TypeError: fetch failed")) {
+    return false;
+  }
+
+  const code = (err as { code?: unknown }).code;
+  return code === undefined || code === null || code === "fetch_failed";
+}
+
+async function fetchTelegramMediaWithFallback(params: {
+  url: string;
+  fetchImpl: typeof fetch;
+  filePathHint: string;
+  maxBytes: number;
+  readIdleTimeoutMs: number;
+}) {
+  const options = {
+    url: params.url,
+    fetchImpl: params.fetchImpl,
+    filePathHint: params.filePathHint,
+    maxBytes: params.maxBytes,
+    readIdleTimeoutMs: params.readIdleTimeoutMs,
+    ssrfPolicy: TELEGRAM_MEDIA_SSRF_POLICY,
+  };
+
+  try {
+    return await fetchRemoteMedia(options);
+  } catch (err) {
+    if (!isPinnedDnsFetchFallbackCandidate(err)) {
+      throw err;
+    }
+    logVerbose("telegram: media fetch failed with strict DNS pinning; retrying unpinned");
+    return fetchRemoteMedia({
+      ...options,
+      pinDns: false,
+    });
+  }
+}
+
 async function resolveTelegramFileWithRetry(
   ctx: TelegramContext,
 ): Promise<{ file_path?: string } | null> {
@@ -119,13 +165,12 @@ async function downloadAndSaveTelegramFile(params: {
   telegramFileName?: string;
 }) {
   const url = `https://api.telegram.org/file/bot${params.token}/${params.filePath}`;
-  const fetched = await fetchRemoteMedia({
+  const fetched = await fetchTelegramMediaWithFallback({
     url,
     fetchImpl: params.fetchImpl,
     filePathHint: params.filePath,
     maxBytes: params.maxBytes,
     readIdleTimeoutMs: TELEGRAM_DOWNLOAD_IDLE_TIMEOUT_MS,
-    ssrfPolicy: TELEGRAM_MEDIA_SSRF_POLICY,
   });
   const originalName = params.telegramFileName ?? fetched.fileName ?? params.filePath;
   return saveMediaBuffer(
