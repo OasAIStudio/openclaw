@@ -38,7 +38,10 @@ export async function applyAuthChoiceXAI(
     validate: validateApiKeyInput,
     prompter: params.prompter,
     setCredential: async (apiKey, mode) =>
-      setXaiApiKey(apiKey, params.agentDir, { secretInputMode: mode }),
+      setXaiApiKey(apiKey, params.agentDir, {
+        secretInputMode: mode,
+        syncSiblingAgents: true,
+      }),
   });
 
   nextConfig = applyAuthProfileConfig(nextConfig, {

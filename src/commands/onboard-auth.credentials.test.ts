@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   setByteplusApiKey,
@@ -72,6 +74,33 @@ describe("onboard auth credentials secret refs", () => {
       }
     });
   }
+
+  it("syncs API-key credentials across sibling agent directories when requested", async () => {
+    const env = await setupAuthTestEnv("openclaw-onboard-auth-credentials-sync-", {
+      agentSubdir: "agents/main/agent",
+    });
+    lifecycle.setStateDir(env.stateDir);
+
+    const siblingAgentDirs = [
+      path.join(env.stateDir, "agents", "assistant", "agent"),
+      path.join(env.stateDir, "agents", "research", "agent"),
+    ];
+    for (const siblingAgentDir of siblingAgentDirs) {
+      await fs.mkdir(siblingAgentDir, { recursive: true });
+    }
+
+    await setOpenaiApiKey("sk-openai-sync", undefined, { syncSiblingAgents: true }); // pragma: allowlist secret
+
+    const expected = await readProfile(env.agentDir, "openai:default");
+    expect(expected).toMatchObject({ key: "sk-openai-sync" });
+    expect(expected?.keyRef).toBeUndefined();
+
+    for (const siblingAgentDir of siblingAgentDirs) {
+      const siblingProfile = await readProfile(siblingAgentDir, "openai:default");
+      expect(siblingProfile).toMatchObject({ key: "sk-openai-sync" });
+      expect(siblingProfile?.keyRef).toBeUndefined();
+    }
+  });
 
   it("keeps env-backed moonshot key as plaintext by default", async () => {
     await expectStoredAuthKey({

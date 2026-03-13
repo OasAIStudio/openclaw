@@ -45,6 +45,7 @@ export async function applyAuthChoiceOpenRouter(
   if (!hasCredential && params.opts?.token && params.opts?.tokenProvider === "openrouter") {
     await setOpenrouterApiKey(normalizeApiKeyInput(params.opts.token), params.agentDir, {
       secretInputMode: requestedSecretInputMode,
+      syncSiblingAgents: true,
     });
     hasCredential = true;
   }
@@ -63,7 +64,10 @@ export async function applyAuthChoiceOpenRouter(
       validate: validateApiKeyInput,
       prompter: params.prompter,
       setCredential: async (apiKey, mode) =>
-        setOpenrouterApiKey(apiKey, params.agentDir, { secretInputMode: mode }),
+        setOpenrouterApiKey(apiKey, params.agentDir, {
+          secretInputMode: mode,
+          syncSiblingAgents: true,
+        }),
     });
     hasCredential = true;
   }
