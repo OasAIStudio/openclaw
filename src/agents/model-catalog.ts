@@ -180,9 +180,13 @@ function mergeConfiguredOptInProviderModels(params: {
 }
 
 export function resetModelCatalogCacheForTest() {
+  resetModelCatalogCache();
+  importPiSdk = defaultImportPiSdk;
+}
+
+export function resetModelCatalogCache() {
   modelCatalogPromise = null;
   hasLoggedModelCatalogError = false;
-  importPiSdk = defaultImportPiSdk;
 }
 
 // Test-only escape hatch: allow mocking the dynamic import to simulate transient failures.

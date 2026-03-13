@@ -398,6 +398,7 @@ export async function startGatewayServer(
 
   // Fail fast before startup if required refs are unresolved.
   let cfgAtStart: OpenClawConfig;
+  let startupPreflightConfig!: OpenClawConfig;
   {
     const freshSnapshot = await readConfigFileSnapshot();
     if (!freshSnapshot.valid) {
@@ -407,20 +408,19 @@ export async function startGatewayServer(
           : "Unknown validation issue.";
       throw new Error(`Invalid config at ${freshSnapshot.path}.\n${issues}`);
     }
-    const startupPreflightConfig = applyGatewayAuthOverridesForStartupPreflight(
-      freshSnapshot.config,
-      {
-        auth: opts.auth,
-        tailscale: opts.tailscale,
-      },
-    );
+    startupPreflightConfig = applyGatewayAuthOverridesForStartupPreflight(freshSnapshot.config, {
+      auth: opts.auth,
+      tailscale: opts.tailscale,
+    });
     await activateRuntimeSecrets(startupPreflightConfig, {
       reason: "startup",
       activate: false,
     });
   }
 
-  cfgAtStart = loadConfig();
+  // Use the latest validated snapshot read from disk for startup so a restarted
+  // gateway doesn't keep using a stale runtime config cache.
+  cfgAtStart = startupPreflightConfig;
   const authBootstrap = await ensureGatewayStartupAuth({
     cfg: cfgAtStart,
     env: process.env,

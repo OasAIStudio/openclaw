@@ -15,6 +15,7 @@ const resetAllLanes = vi.fn();
 const restartGatewayProcessWithFreshPid = vi.fn<
   () => { mode: "spawned" | "supervised" | "disabled" | "failed"; pid?: number; detail?: string }
 >(() => ({ mode: "disabled" }));
+const resetModelCatalogCache = vi.fn();
 const abortEmbeddedPiRun = vi.fn(
   (_sessionId?: string, _opts?: { mode?: "all" | "compacting" }) => false,
 );
@@ -39,6 +40,9 @@ vi.mock("../../infra/restart.js", () => ({
 
 vi.mock("../../infra/process-respawn.js", () => ({
   restartGatewayProcessWithFreshPid: () => restartGatewayProcessWithFreshPid(),
+}));
+vi.mock("../../agents/model-catalog.js", () => ({
+  resetModelCatalogCache: () => resetModelCatalogCache(),
 }));
 
 vi.mock("../../process/command-queue.js", () => ({
@@ -281,6 +285,7 @@ describe("runGatewayLoop", () => {
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(2);
       expect(markGatewayDraining).toHaveBeenCalledTimes(2);
       expect(resetAllLanes).toHaveBeenCalledTimes(2);
+      expect(resetModelCatalogCache).toHaveBeenCalledTimes(2);
       expect(acquireGatewayLock).toHaveBeenCalledTimes(3);
 
       sigterm();

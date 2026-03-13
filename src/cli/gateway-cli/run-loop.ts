@@ -1,3 +1,4 @@
+import { resetModelCatalogCache } from "../../agents/model-catalog.js";
 import {
   abortEmbeddedPiRun,
   getActiveEmbeddedRunCount,
@@ -64,6 +65,7 @@ export async function runGatewayLoop(params: {
   };
   const handleRestartAfterServerClose = async () => {
     const hadLock = await releaseLockIfHeld();
+    resetModelCatalogCache();
     // Release the lock BEFORE spawning so the child can acquire it immediately.
     const respawn = restartGatewayProcessWithFreshPid();
     if (respawn.mode === "spawned" || respawn.mode === "supervised") {
