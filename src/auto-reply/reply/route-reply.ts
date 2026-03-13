@@ -53,34 +53,25 @@ const buildRouteReplyPayloadFingerprint = (payload: ReplyPayload): string => {
   return createHash("sha256").update(JSON.stringify(normalizedPayload)).digest("hex");
 };
 
-const normalizeRouteReplyTo = (to: string, channel: string): string => {
-  const normalizedTo = to.trim();
-  const explicitPrefix = normalizedTo.split(":")[0]?.trim();
-  if (!explicitPrefix) {
-    return normalizedTo;
-  }
-  const resolvedPrefix = normalizeMessageChannel(explicitPrefix);
-  if (!resolvedPrefix || resolvedPrefix === INTERNAL_MESSAGE_CHANNEL) {
-    return normalizedTo;
-  }
-  if (resolvedPrefix === normalizeMessageChannel(channel)) {
-    return normalizedTo.slice(explicitPrefix.length + 1).trim();
-  }
-  // If the channel is explicitly embedded and differs from the requested channel,
-  // keep the full target string to avoid collapsing distinct routed channels.
-  return normalizedTo;
-};
-
-const resolveRouteReplyTargetChannel = (params: {
+const resolveRouteReplyTargetChannelAndAddress = (params: {
   channel: OriginatingChannelType;
   to: string;
-}): string => {
-  const targetPrefix = params.to.split(":")[0]?.trim();
-  const targetChannel = normalizeMessageChannel(targetPrefix);
-  if (targetChannel && targetChannel !== INTERNAL_MESSAGE_CHANNEL) {
-    return targetChannel;
+}): { channel: string; to: string } => {
+  const normalizedTo = params.to.trim();
+  const explicitPrefix = normalizedTo.split(":")[0]?.trim();
+  if (explicitPrefix) {
+    const resolvedPrefix = normalizeChannelId(explicitPrefix);
+    if (resolvedPrefix && resolvedPrefix !== INTERNAL_MESSAGE_CHANNEL) {
+      return {
+        channel: resolvedPrefix,
+        to: normalizedTo.slice(explicitPrefix.length + 1).trim(),
+      };
+    }
   }
-  return normalizeMessageChannel(params.channel) ?? INTERNAL_MESSAGE_CHANNEL;
+  return {
+    channel: normalizeMessageChannel(params.channel) ?? INTERNAL_MESSAGE_CHANNEL,
+    to: normalizedTo,
+  };
 };
 
 const buildRouteReplyTargetFingerprint = (params: {
@@ -89,14 +80,14 @@ const buildRouteReplyTargetFingerprint = (params: {
   accountId?: string;
   threadId?: string | number;
 }): string => {
-  const normalizedTo = normalizeRouteReplyTo(params.to, params.channel);
-  const channel = resolveRouteReplyTargetChannel({
+  const normalizedTarget = resolveRouteReplyTargetChannelAndAddress({
     channel: params.channel,
-    to: normalizedTo,
+    to: params.to,
   });
+  const normalizedTo = normalizedTarget.to;
   const threadIdValue =
     params.threadId === undefined || params.threadId === null ? "" : String(params.threadId);
-  return `${channel}|${normalizedTo}|${params.accountId ?? ""}|${threadIdValue}`;
+  return `${normalizedTarget.channel}|${normalizedTo}|${params.accountId ?? ""}|${threadIdValue}`;
 };
 
 const buildRouteReplyDedupeKey = (params: {

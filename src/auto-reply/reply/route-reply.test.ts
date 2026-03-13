@@ -456,6 +456,25 @@ describe("routeReply", () => {
     expect(mocks.sendMessageSlack).toHaveBeenCalledTimes(0);
   });
 
+  it("deduplicates identical route replies when target channel is explicit in one path and bare in another", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([]);
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "imessage",
+      to: "imessage:+15550009999",
+      messageId: "msg-dup-cross-channel-prefix-1",
+      cfg: {} as never,
+    });
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "imessage",
+      to: "+15550009999",
+      messageId: "msg-dup-cross-channel-prefix-1",
+      cfg: {} as never,
+    });
+    expect(mocks.sendMessageIMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("deduplicates identical route replies for the same session and target when messageId is missing", async () => {
     mocks.deliverOutboundPayloads.mockResolvedValue([]);
     await routeReply({

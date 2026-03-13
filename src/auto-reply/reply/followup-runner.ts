@@ -9,6 +9,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
+import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
 import { defaultRuntime } from "../../runtime.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
@@ -156,6 +157,21 @@ export function createFollowupRunner(params: {
         activeSessionEntry?.systemPromptReport,
       );
       try {
+        // Apply media understanding to queued messages before running the agent
+        // This mirrors the behavior in dispatch-acp.ts
+        if (queued.ctx && !queued.ctx.MediaUnderstanding?.length) {
+          try {
+            await applyMediaUnderstanding({
+              ctx: queued.ctx,
+              cfg: queued.run.config,
+            });
+          } catch (err) {
+            logVerbose(
+              `followup-runner: media understanding failed, proceeding with raw content: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+
         const fallbackResult = await runWithModelFallback({
           cfg: queued.run.config,
           provider: queued.run.provider,
