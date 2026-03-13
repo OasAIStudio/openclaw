@@ -162,6 +162,14 @@ function resolveRetryConfig(cronConfig?: CronConfig) {
 }
 
 function resolveDeliveryStatus(params: { job: CronJob; delivered?: boolean }): CronDeliveryStatus {
+  // Check delivery.mode first - if "none", no delivery was requested
+  const delivery = params.job.delivery;
+  if (delivery && typeof delivery === "object") {
+    const mode = (delivery as { mode?: unknown }).mode;
+    if (mode === "none") {
+      return "not-requested";
+    }
+  }
   if (params.delivered === true) {
     return "delivered";
   }
