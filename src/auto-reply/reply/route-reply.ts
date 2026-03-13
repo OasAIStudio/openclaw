@@ -47,6 +47,34 @@ const buildRouteReplyPayloadFingerprint = (payload: ReplyPayload): string => {
   return createHash("sha256").update(JSON.stringify(normalizedPayload)).digest("hex");
 };
 
+const resolveRouteReplyTargetChannel = (params: {
+  channel: OriginatingChannelType;
+  to: string;
+}): string => {
+  const targetPrefix = params.to.split(":")[0]?.trim();
+  const targetChannel = normalizeMessageChannel(targetPrefix);
+  if (targetChannel && targetChannel !== INTERNAL_MESSAGE_CHANNEL) {
+    return targetChannel;
+  }
+  return normalizeMessageChannel(params.channel) ?? INTERNAL_MESSAGE_CHANNEL;
+};
+
+const buildRouteReplyTargetFingerprint = (params: {
+  channel: OriginatingChannelType;
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+}): string => {
+  const normalizedTo = params.to.trim();
+  const channel = resolveRouteReplyTargetChannel({
+    channel: params.channel,
+    to: normalizedTo,
+  });
+  const threadIdValue =
+    params.threadId === undefined || params.threadId === null ? "" : String(params.threadId);
+  return `${channel}|${normalizedTo}|${params.accountId ?? ""}|${threadIdValue}`;
+};
+
 const buildRouteReplyDedupeKey = (params: {
   messageId: string;
   sessionKey?: string;
@@ -56,17 +84,18 @@ const buildRouteReplyDedupeKey = (params: {
   threadId?: string | number;
   payload: ReplyPayload;
 }): string => {
-  const threadIdValue =
-    params.threadId === undefined || params.threadId === null ? "" : String(params.threadId);
   const payloadFingerprint = buildRouteReplyPayloadFingerprint(params.payload);
+  const targetFingerprint = buildRouteReplyTargetFingerprint({
+    channel: params.channel,
+    to: params.to,
+    accountId: params.accountId,
+    threadId: params.threadId,
+  });
   return JSON.stringify({
     type: "route-reply",
     messageId: params.messageId,
     sessionKey: params.sessionKey ?? "",
-    channel: params.channel,
-    to: params.to,
-    accountId: params.accountId ?? "",
-    threadId: threadIdValue,
+    targetFingerprint,
     payloadFingerprint,
   });
 };
