@@ -115,7 +115,8 @@ export async function dispatchReplyFromConfig(params: {
   const diagnosticsEnabled = isDiagnosticsEnabled(cfg);
   const channel = String(ctx.Surface ?? ctx.Provider ?? "unknown").toLowerCase();
   const chatId = ctx.To ?? ctx.From;
-  const messageId = ctx.MessageSid ?? ctx.MessageSidFirst ?? ctx.MessageSidLast;
+  const messageId =
+    ctx.MessageSidFull?.trim() ?? ctx.MessageSid ?? ctx.MessageSidFirst ?? ctx.MessageSidLast;
   const sessionKey = ctx.SessionKey;
   const startTime = diagnosticsEnabled ? Date.now() : 0;
   const canTrackSession = diagnosticsEnabled && Boolean(sessionKey);
@@ -259,6 +260,7 @@ export async function dispatchReplyFromConfig(params: {
       channel: originatingChannel,
       to: originatingTo,
       sessionKey: ctx.SessionKey,
+      messageId,
       accountId: ctx.AccountId,
       threadId: ctx.MessageThreadId,
       cfg,
@@ -288,6 +290,7 @@ export async function dispatchReplyFromConfig(params: {
           channel: originatingChannel,
           to: originatingTo,
           sessionKey: ctx.SessionKey,
+          messageId,
           accountId: ctx.AccountId,
           threadId: ctx.MessageThreadId,
           cfg,
@@ -518,6 +521,7 @@ export async function dispatchReplyFromConfig(params: {
           channel: originatingChannel,
           to: originatingTo,
           sessionKey: ctx.SessionKey,
+          messageId,
           accountId: ctx.AccountId,
           threadId: ctx.MessageThreadId,
           cfg,
@@ -570,6 +574,7 @@ export async function dispatchReplyFromConfig(params: {
               channel: originatingChannel,
               to: originatingTo,
               sessionKey: ctx.SessionKey,
+              messageId,
               accountId: ctx.AccountId,
               threadId: ctx.MessageThreadId,
               cfg,

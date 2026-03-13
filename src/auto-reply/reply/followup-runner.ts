@@ -100,6 +100,7 @@ export function createFollowupRunner(params: {
           channel: originatingChannel,
           to: originatingTo,
           sessionKey: queued.run.sessionKey,
+          messageId: queued.messageId,
           accountId: queued.originatingAccountId,
           threadId: queued.originatingThreadId,
           cfg: queued.run.config,

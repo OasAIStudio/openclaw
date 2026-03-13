@@ -59,7 +59,7 @@ const actualDeliver = await vi.importActual<typeof import("../../infra/outbound/
   "../../infra/outbound/deliver.js",
 );
 
-const { routeReply } = await import("./route-reply.js");
+const { routeReply, resetRouteReplyDedupeForTests } = await import("./route-reply.js");
 
 const createRegistry = (channels: PluginRegistry["channels"]): PluginRegistry => ({
   plugins: [],
@@ -112,6 +112,7 @@ describe("routeReply", () => {
   });
 
   afterEach(() => {
+    resetRouteReplyDedupeForTests();
     setActivePluginRegistry(emptyRegistry);
   });
 
@@ -414,6 +415,44 @@ describe("routeReply", () => {
         mirror: undefined,
       }),
     );
+  });
+
+  it("deduplicates identical route replies for the same inbound message and target", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([]);
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "slack",
+      to: "channel:C123",
+      messageId: "msg-dup-1",
+      cfg: {} as never,
+    });
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "slack",
+      to: "channel:C123",
+      messageId: "msg-dup-1",
+      cfg: {} as never,
+    });
+    expect(mocks.sendMessageSlack).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not dedupe route replies with different inbound message ids", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([]);
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "slack",
+      to: "channel:C123",
+      messageId: "msg-dup-2",
+      cfg: {} as never,
+    });
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "slack",
+      to: "channel:C123",
+      messageId: "msg-dup-3",
+      cfg: {} as never,
+    });
+    expect(mocks.sendMessageSlack).toHaveBeenCalledTimes(2);
   });
 });
 

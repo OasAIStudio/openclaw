@@ -293,6 +293,35 @@ describe("dispatchReplyFromConfig", () => {
     );
   });
 
+  it("passes inbound message id to routeReply for cross-channel delivery", async () => {
+    setNoAbort();
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "slack",
+      OriginatingChannel: "telegram",
+      OriginatingTo: "telegram:999",
+      MessageSid: "sid-dup-1",
+      MessageThreadId: 123,
+      AccountId: "acc-1",
+      GroupChannel: "telegram:999",
+      ChatType: "group",
+    });
+
+    const replyResolver = async (
+      _ctx: MsgContext,
+      _opts?: GetReplyOptions,
+      _cfg?: OpenClawConfig,
+    ) => ({ text: "hi" }) satisfies ReplyPayload;
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(mocks.routeReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "sid-dup-1",
+      }),
+    );
+  });
+
   it("forces suppressTyping when routing to a different originating channel", async () => {
     setNoAbort();
     const cfg = emptyConfig;
