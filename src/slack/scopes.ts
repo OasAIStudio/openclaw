@@ -94,7 +94,8 @@ export async function fetchSlackScopes(
   timeoutMs: number,
 ): Promise<SlackScopesResult> {
   const client = createSlackWebClient(token, { timeout: timeoutMs });
-  const attempts: SlackScopesSource[] = ["auth.scopes", "apps.permissions.info"];
+  // apps.permissions.info is deprecated, prefer auth.scopes
+  const attempts: SlackScopesSource[] = ["auth.scopes"];
   const errors: string[] = [];
 
   for (const method of attempts) {
