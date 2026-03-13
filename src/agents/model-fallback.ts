@@ -25,6 +25,8 @@ import {
   buildConfiguredAllowlistKeys,
   buildModelAliasIndex,
   modelKey,
+  normalizeProviderId,
+  inferUniqueProviderFromConfiguredModels,
   normalizeModelRef,
   resolveConfiguredModelRef,
   resolveModelRefFromString,
@@ -103,6 +105,56 @@ type ModelFallbackErrorHandler = (attempt: {
   attempt: number;
   total: number;
 }) => void | Promise<void>;
+
+function inferImageModelProviderForUnqualifiedModel(params: {
+  cfg: OpenClawConfig | undefined;
+  model: string;
+}): string | undefined {
+  const model = params.model.trim();
+  if (!model || model.includes("/")) {
+    return undefined;
+  }
+
+  const byDefaults = params.cfg
+    ? inferUniqueProviderFromConfiguredModels({ cfg: params.cfg, model })
+    : undefined;
+  if (byDefaults) {
+    return byDefaults;
+  }
+
+  const providers = params.cfg?.models?.providers;
+  if (!providers || typeof providers !== "object") {
+    return undefined;
+  }
+
+  const target = model.toLowerCase();
+  let inferred: string | undefined;
+
+  for (const [providerRaw, providerCfg] of Object.entries(providers)) {
+    const rawModels = (providerCfg as { models?: unknown }).models;
+    if (!Array.isArray(rawModels)) {
+      continue;
+    }
+    const provider = normalizeProviderId(providerRaw);
+    const hasModel = rawModels.some((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+      const entryObj = entry as { id?: unknown };
+      const id = typeof entryObj.id === "string" ? entryObj.id : JSON.stringify(entryObj.id ?? "");
+      return id.toLowerCase() === target;
+    });
+    if (!hasModel) {
+      continue;
+    }
+    if (inferred && inferred !== provider) {
+      return undefined;
+    }
+    inferred = provider;
+  }
+
+  return inferred;
+}
 
 type ModelFallbackRunResult<T> = {
   result: T;
@@ -214,9 +266,21 @@ function resolveImageFallbackCandidates(params: {
     createModelCandidateCollector(allowlist);
 
   const addRaw = (raw: string, opts?: { allowlist?: boolean }) => {
+    const value = String(raw ?? "").trim();
+    if (!value) {
+      return;
+    }
+
+    const inferredProvider = !value.includes("/")
+      ? inferImageModelProviderForUnqualifiedModel({
+          cfg: params.cfg,
+          model: value,
+        })
+      : undefined;
+
     const resolved = resolveModelRefFromString({
       raw: String(raw ?? ""),
-      defaultProvider: params.defaultProvider,
+      defaultProvider: inferredProvider ?? params.defaultProvider,
       aliasIndex,
     });
     if (!resolved) {

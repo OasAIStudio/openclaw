@@ -1432,6 +1432,38 @@ describe("runWithImageModelFallback", () => {
       ["google", "gemini-2.5-flash-image-preview"],
     ]);
   });
+
+  it("resolves unqualified imageModel primary using configured provider model catalogs", async () => {
+    const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          ollama: {
+            models: [{ id: "qwen3.5:latest", input: ["image"] }],
+          },
+          google: {
+            models: [{ id: "gemini-3.1-flash-lite-preview", input: ["image"] }],
+          },
+        },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.4" },
+          imageModel: { primary: "gemini-3.1-flash-lite-preview" },
+        },
+      },
+    };
+
+    const run = vi.fn().mockResolvedValue("ok");
+
+    const result = await runWithImageModelFallback({
+      cfg,
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("google", "gemini-3.1-flash-lite-preview");
+  });
 });
 
 describe("isAnthropicBillingError", () => {
