@@ -1,3 +1,4 @@
+import { EnvHttpProxyAgent } from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_GEMINI_EMBEDDING_MODEL } from "./embeddings-gemini.js";
 import { mockPublicPinnedHostname } from "./test-helpers/ssrf.js";
@@ -262,6 +263,30 @@ describe("embedding provider remote overrides", () => {
     const { init } = readFirstFetchRequest(fetchMock);
     const headers = (init?.headers ?? {}) as Record<string, string>;
     expect(headers["x-goog-api-key"]).toBe("env-gemini-key");
+  });
+
+  it("routes Gemini embeddings through env proxy when HTTPS_PROXY is set", async () => {
+    const fetchMock = createGeminiFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    mockPublicPinnedHostname();
+    vi.stubEnv("HTTPS_PROXY", "http://proxy.test:8080");
+
+    const result = await createEmbeddingProvider({
+      config: {} as never,
+      provider: "gemini",
+      remote: {
+        apiKey: "gemini-key",
+      },
+      model: "text-embedding-004",
+      fallback: "openai",
+    });
+
+    const provider = requireProvider(result);
+    await provider.embedQuery("hello");
+
+    const { init } = readFirstFetchRequest(fetchMock);
+    const requestInit = init as (RequestInit & { dispatcher?: unknown }) | undefined;
+    expect(requestInit?.dispatcher).toBeInstanceOf(EnvHttpProxyAgent);
   });
 
   it("builds Mistral embeddings requests with bearer auth", async () => {
