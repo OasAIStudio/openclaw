@@ -1,3 +1,4 @@
+import { EnvHttpProxyAgent } from "undici";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as authModule from "../agents/model-auth.js";
 import { DEFAULT_GEMINI_EMBEDDING_MODEL } from "./embeddings-gemini.js";
@@ -25,6 +26,13 @@ const createGeminiFetchMock = () =>
     ok: true,
     status: 200,
     json: async () => ({ embedding: { values: [1, 2, 3] } }),
+  }));
+
+const createGeminiBatchFetchMock = () =>
+  vi.fn(async (_input?: unknown, _init?: unknown) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ embeddings: [{ values: [1, 2, 3] }, { values: [4, 5, 6] }] }),
   }));
 
 function readFirstFetchRequest(fetchMock: { mock: { calls: unknown[][] } }) {
@@ -245,6 +253,61 @@ describe("embedding provider remote overrides", () => {
     const { init } = readFirstFetchRequest(fetchMock);
     const headers = (init?.headers ?? {}) as Record<string, string>;
     expect(headers["x-goog-api-key"]).toBe("env-gemini-key");
+  });
+
+  it("routes Gemini embeddings through env proxy when HTTPS_PROXY is set", async () => {
+    const fetchMock = createGeminiFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("HTTPS_PROXY", "http://proxy.test:8080");
+
+    const result = await createEmbeddingProvider({
+      config: {} as never,
+      provider: "gemini",
+      remote: {
+        apiKey: "gemini-key",
+      },
+      model: "text-embedding-004",
+      fallback: "openai",
+    });
+
+    const provider = requireProvider(result);
+    await provider.embedQuery("hello");
+
+    const { init } = readFirstFetchRequest(fetchMock);
+    const requestInit = init as (RequestInit & { dispatcher?: unknown }) | undefined;
+    expect(requestInit?.dispatcher).toBeInstanceOf(EnvHttpProxyAgent);
+  });
+
+  it("routes Gemini batch embeddings through env proxy when HTTPS_PROXY is set", async () => {
+    const fetchMock = createGeminiBatchFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("HTTPS_PROXY", "http://proxy.test:8080");
+
+    const result = await createEmbeddingProvider({
+      config: {} as never,
+      provider: "gemini",
+      remote: {
+        apiKey: "gemini-key",
+      },
+      model: "text-embedding-004",
+      fallback: "openai",
+    });
+
+    const provider = requireProvider(result);
+    const vectors = await provider.embedBatch(["hello", "world"]);
+    expect(vectors).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
+
+    const { init } = readFirstFetchRequest(fetchMock);
+    const requestInit = init as (RequestInit & { dispatcher?: unknown }) | undefined;
+    expect(requestInit?.dispatcher).toBeInstanceOf(EnvHttpProxyAgent);
+
+    const payload = JSON.parse((requestInit?.body as string | undefined) ?? "{}") as {
+      requests?: unknown[];
+    };
+    expect(payload.requests?.length).toBe(2);
   });
 
   it("builds Mistral embeddings requests with bearer auth", async () => {
