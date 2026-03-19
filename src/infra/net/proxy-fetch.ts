@@ -1,6 +1,6 @@
 import { EnvHttpProxyAgent, ProxyAgent, fetch as undiciFetch } from "undici";
 import { logWarn } from "../../logger.js";
-import { hasEnvHttpProxyConfigured } from "./proxy-env.js";
+import { hasEnvHttpProxyConfigured, resolveEnvHttpProxyUrl } from "./proxy-env.js";
 
 export const PROXY_FETCH_PROXY_URL = Symbol.for("openclaw.proxyFetch.proxyUrl");
 type ProxyFetchWithMetadata = typeof fetch & {
@@ -57,11 +57,21 @@ export function resolveProxyFetchFromEnv(): typeof fetch | undefined {
   }
   try {
     const agent = new EnvHttpProxyAgent();
-    return ((input: RequestInfo | URL, init?: RequestInit) =>
+    const proxyFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
       undiciFetch(input as string | URL, {
         ...(init as Record<string, unknown>),
         dispatcher: agent,
-      }) as unknown as Promise<Response>) as typeof fetch;
+      }) as unknown as Promise<Response>) as ProxyFetchWithMetadata;
+    const proxyUrl = resolveEnvHttpProxyUrl("https");
+    if (proxyUrl) {
+      Object.defineProperty(proxyFetch, PROXY_FETCH_PROXY_URL, {
+        value: proxyUrl,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    }
+    return proxyFetch;
   } catch (err) {
     logWarn(
       `Proxy env var set but agent creation failed — falling back to direct fetch: ${err instanceof Error ? err.message : String(err)}`,
