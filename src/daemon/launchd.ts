@@ -262,15 +262,13 @@ async function recoverLaunchAgentRegistration(args: {
       detail: (boot.stderr || boot.stdout).trim() || undefined,
     };
   }
-
-  const recheck = await execLaunchctl(["print", serviceId]);
-  if (recheck.code !== 0) {
-    return {
-      ok: false,
-      detail: (recheck.stderr || recheck.stdout).trim() || undefined,
-    };
+  const recheck = await ensureLaunchAgentListedAfterBootstrap({
+    domain: args.domain,
+    label: args.label,
+  });
+  if (!recheck.ok) {
+    return recheck;
   }
-
   return { ok: true };
 }
 
@@ -380,6 +378,13 @@ function isLaunchctlNotLoaded(res: { stdout: string; stderr: string; code: numbe
   );
 }
 
+function isLaunchAgentLabelListed(output: string, label: string): boolean {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .some((line) => line.split(/\s+/).at(-1) === label);
+}
+
 function isUnsupportedGuiDomain(detail: string): boolean {
   const normalized = detail.toLowerCase();
   return (
@@ -395,6 +400,31 @@ async function sleepMs(ms: number): Promise<void> {
   await new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function ensureLaunchAgentListedAfterBootstrap(params: {
+  domain: string;
+  label: string;
+}): Promise<LaunchAgentRecoveryResult> {
+  const serviceId = `${params.domain}/${params.label}`;
+  const print = await execLaunchctl(["print", serviceId]);
+  if (print.code === 0) {
+    return { ok: true };
+  }
+  const list = await execLaunchctl(["list"]);
+  if (list.code !== 0) {
+    return {
+      ok: false,
+      detail: (list.stderr || list.stdout).trim() || "launchctl list failed",
+    };
+  }
+  if (!isLaunchAgentLabelListed(list.stdout, params.label)) {
+    return {
+      ok: false,
+      detail: "LaunchAgent registration was not re-listable after bootstrap",
+    };
+  }
+  return { ok: true };
 }
 
 async function waitForPidExit(pid: number): Promise<void> {
@@ -590,6 +620,18 @@ export async function restartLaunchAgent({
       throw new Error(
         `launchctl kickstart failed: ${detail} Recovery after failure failed: ${
           recovery.detail ?? "unknown error"
+        }`,
+      );
+    }
+
+    const registration = await ensureLaunchAgentListedAfterBootstrap({
+      domain,
+      label,
+    });
+    if (!registration.ok) {
+      throw new Error(
+        `launchctl kickstart failed: ${detail} Recovery revalidation failed: ${
+          registration.detail ?? "unknown error"
         }`,
       );
     }

@@ -388,6 +388,7 @@ describe("launchd install", () => {
     state.kickstartError = "Could not find service";
     state.kickstartFailureBudget = 2;
     state.printError = "Could not find service";
+    state.listOutput = "123 0 ai.openclaw.gateway\n";
 
     await expect(
       restartLaunchAgent({
@@ -411,11 +412,40 @@ describe("launchd install", () => {
     const kickstartCalls = state.launchctlCalls.filter(
       (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
     );
+    const listCalls = state.launchctlCalls.filter((c) => c[0] === "list");
 
     expect(bootoutIndex).toBeGreaterThanOrEqual(0);
     expect(enableCalls.length).toBe(3);
     expect(bootstrapCalls.length).toBe(3);
     expect(kickstartCalls.length).toBe(2);
+    expect(listCalls.length).toBe(2);
+  });
+
+  it("revalidation step preserves restart failure when launchd service is still unlisted after recovery", async () => {
+    const env = createDefaultLaunchdEnv();
+    state.kickstartError = "Could not find service";
+    state.kickstartFailureBudget = 1;
+    state.printError = "Could not find service";
+
+    await expect(
+      restartLaunchAgent({
+        env,
+        stdout: new PassThrough(),
+      }),
+    ).rejects.toThrow("Recovery revalidation failed");
+
+    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
+    const label = "ai.openclaw.gateway";
+    const serviceId = `${domain}/${label}`;
+    const listCalls = state.launchctlCalls.filter((c) => c[0] === "list");
+    const enableCalls = state.launchctlCalls.filter((c) => c[0] === "enable" && c[1] === serviceId);
+    const bootstrapCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === resolveLaunchAgentPlistPath(env),
+    );
+
+    expect(enableCalls.length).toBe(2);
+    expect(bootstrapCalls.length).toBe(2);
+    expect(listCalls.length).toBe(1);
   });
 
   it("waits for previous launchd pid to exit before bootstrapping", async () => {
