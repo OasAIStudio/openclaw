@@ -18,7 +18,10 @@ const state = vi.hoisted(() => ({
   launchctlCalls: [] as string[][],
   listOutput: "",
   printOutput: "",
+  printError: "",
   bootstrapError: "",
+  kickstartError: "",
+  kickstartFailureBudget: 0,
   dirs: new Set<string>(),
   dirModes: new Map<string, number>(),
   files: new Map<string, string>(),
@@ -45,10 +48,17 @@ vi.mock("./exec-file.js", () => ({
       return { stdout: state.listOutput, stderr: "", code: 0 };
     }
     if (call[0] === "print") {
+      if (state.printError) {
+        return { stdout: "", stderr: state.printError, code: 1 };
+      }
       return { stdout: state.printOutput, stderr: "", code: 0 };
     }
     if (call[0] === "bootstrap" && state.bootstrapError) {
       return { stdout: "", stderr: state.bootstrapError, code: 1 };
+    }
+    if (call[0] === "kickstart" && state.kickstartError && state.kickstartFailureBudget > 0) {
+      state.kickstartFailureBudget -= 1;
+      return { stdout: "", stderr: state.kickstartError, code: 1 };
     }
     return { stdout: "", stderr: "", code: 0 };
   }),
@@ -110,6 +120,9 @@ beforeEach(() => {
   state.listOutput = "";
   state.printOutput = "";
   state.bootstrapError = "";
+  state.kickstartError = "";
+  state.kickstartFailureBudget = 0;
+  state.printError = "";
   state.dirs.clear();
   state.dirModes.clear();
   state.files.clear();
@@ -336,6 +349,73 @@ describe("launchd install", () => {
     expect(bootoutIndex).toBeLessThan(enableIndex);
     expect(enableIndex).toBeLessThan(bootstrapIndex);
     expect(bootstrapIndex).toBeLessThan(kickstartIndex);
+  });
+
+  it("retries kickstart on restart failures when registration can be restored", async () => {
+    const env = createDefaultLaunchdEnv();
+    state.kickstartError = "Could not find service";
+    state.kickstartFailureBudget = 1;
+
+    await restartLaunchAgent({
+      env,
+      stdout: new PassThrough(),
+    });
+
+    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
+    const label = "ai.openclaw.gateway";
+    const plistPath = resolveLaunchAgentPlistPath(env);
+    const serviceId = `${domain}/${label}`;
+
+    const bootoutIndex = state.launchctlCalls.findIndex(
+      (c) => c[0] === "bootout" && c[1] === serviceId,
+    );
+    const enableCalls = state.launchctlCalls.filter((c) => c[0] === "enable" && c[1] === serviceId);
+    const bootstrapCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === plistPath,
+    );
+    const kickstartCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
+    );
+
+    expect(bootoutIndex).toBeGreaterThanOrEqual(0);
+    expect(enableCalls.length).toBe(2);
+    expect(bootstrapCalls.length).toBe(2);
+    expect(kickstartCalls.length).toBe(2);
+  });
+
+  it("restores registration when kickstart keeps failing after bootstrap and marks restart as failed", async () => {
+    const env = createDefaultLaunchdEnv();
+    state.kickstartError = "Could not find service";
+    state.kickstartFailureBudget = 2;
+    state.printError = "Could not find service";
+
+    await expect(
+      restartLaunchAgent({
+        env,
+        stdout: new PassThrough(),
+      }),
+    ).rejects.toThrow("LaunchAgent registration was restored, but restart could not be reapplied.");
+
+    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
+    const label = "ai.openclaw.gateway";
+    const plistPath = resolveLaunchAgentPlistPath(env);
+    const serviceId = `${domain}/${label}`;
+
+    const bootoutIndex = state.launchctlCalls.findIndex(
+      (c) => c[0] === "bootout" && c[1] === serviceId,
+    );
+    const enableCalls = state.launchctlCalls.filter((c) => c[0] === "enable" && c[1] === serviceId);
+    const bootstrapCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === plistPath,
+    );
+    const kickstartCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
+    );
+
+    expect(bootoutIndex).toBeGreaterThanOrEqual(0);
+    expect(enableCalls.length).toBe(3);
+    expect(bootstrapCalls.length).toBe(3);
+    expect(kickstartCalls.length).toBe(2);
   });
 
   it("waits for previous launchd pid to exit before bootstrapping", async () => {
