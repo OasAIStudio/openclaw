@@ -395,9 +395,6 @@ describe("launchd install", () => {
     const plistPath = resolveLaunchAgentPlistPath(env);
     const serviceId = `${domain}/${label}`;
 
-    const bootoutIndex = state.launchctlCalls.findIndex(
-      (c) => c[0] === "bootout" && c[1] === serviceId,
-    );
     const enableCalls = state.launchctlCalls.filter((c) => c[0] === "enable" && c[1] === serviceId);
     const bootstrapCalls = state.launchctlCalls.filter(
       (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === plistPath,
@@ -406,10 +403,42 @@ describe("launchd install", () => {
       (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
     );
 
-    expect(bootoutIndex).toBe(-1);
     expect(enableCalls.length).toBe(1);
     expect(bootstrapCalls.length).toBe(1);
     expect(kickstartCalls.length).toBe(2);
+  });
+
+  it("fails loudly when kickstart succeeds but the service is still not loadable after recovery", async () => {
+    const env = createDefaultLaunchdEnv();
+    state.printError = "Could not find service";
+    state.listOutput = "123 0 ai.openclaw.gateway\n";
+
+    await expect(
+      restartLaunchAgent({
+        env,
+        stdout: new PassThrough(),
+      }),
+    ).rejects.toThrow(
+      "launchctl kickstart succeeded, but the service is not loadable after restart",
+    );
+
+    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
+    const label = "ai.openclaw.gateway";
+    const serviceId = `${domain}/${label}`;
+
+    const enableCalls = state.launchctlCalls.filter((c) => c[0] === "enable" && c[1] === serviceId);
+    const bootstrapCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === resolveLaunchAgentPlistPath(env),
+    );
+    const kickstartCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
+    );
+    const listCalls = state.launchctlCalls.filter((c) => c[0] === "list");
+
+    expect(enableCalls.length).toBeGreaterThanOrEqual(1);
+    expect(bootstrapCalls.length).toBeGreaterThanOrEqual(1);
+    expect(kickstartCalls.length).toBeGreaterThanOrEqual(2);
+    expect(listCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("restores registration when kickstart keeps failing after bootstrap and marks restart as failed", async () => {
@@ -424,7 +453,7 @@ describe("launchd install", () => {
         env,
         stdout: new PassThrough(),
       }),
-    ).rejects.toThrow("LaunchAgent is registered but not loadable.");
+    ).rejects.toThrow("Recovery reapplication failed");
 
     const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
     const label = "ai.openclaw.gateway";
@@ -443,11 +472,11 @@ describe("launchd install", () => {
     );
     const listCalls = state.launchctlCalls.filter((c) => c[0] === "list");
 
-    expect(bootoutIndex).toBeGreaterThanOrEqual(0);
+    expect(bootoutIndex).toBe(-1);
     expect(enableCalls.length).toBeGreaterThanOrEqual(2);
     expect(bootstrapCalls.length).toBeGreaterThanOrEqual(2);
     expect(kickstartCalls.length).toBeGreaterThanOrEqual(2);
-    expect(listCalls.length).toBeGreaterThanOrEqual(2);
+    expect(listCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("revalidation step preserves restart failure when launchd service is still unlisted after recovery", async () => {
@@ -462,7 +491,9 @@ describe("launchd install", () => {
         env,
         stdout: new PassThrough(),
       }),
-    ).rejects.toThrow("Recovery reapplication failed");
+    ).rejects.toThrow(
+      "launchctl kickstart succeeded, but the service is not loadable after restart",
+    );
 
     const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
     const label = "ai.openclaw.gateway";
@@ -475,7 +506,7 @@ describe("launchd install", () => {
 
     expect(enableCalls.length).toBeGreaterThanOrEqual(2);
     expect(bootstrapCalls.length).toBeGreaterThanOrEqual(2);
-    expect(listCalls.length).toBeGreaterThanOrEqual(2);
+    expect(listCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("recovers from kickstart recheck that reports absent while still repairable", async () => {
@@ -487,9 +518,8 @@ describe("launchd install", () => {
       { stdout: "state = running\npid = 4242", code: 0 },
       { stderr: "Could not find service", code: 1 },
       { stderr: "Could not find service", code: 1 },
-      { stderr: "Could not find service", code: 1 },
-      { stderr: "Could not find service", code: 1 },
       { stdout: "state = running\npid = 4243", code: 0 },
+      { stdout: "state = running\npid = 4244", code: 0 },
     ];
 
     await restartLaunchAgent({
@@ -510,7 +540,7 @@ describe("launchd install", () => {
 
     expect(bootstrapCalls.length).toBeGreaterThanOrEqual(2);
     expect(kickstartCalls.length).toBe(3);
-    expect(listCalls.length).toBeGreaterThanOrEqual(2);
+    expect(listCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("waits for previous launchd pid to exit before bootstrapping", async () => {

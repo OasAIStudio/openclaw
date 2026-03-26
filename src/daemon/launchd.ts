@@ -450,6 +450,13 @@ async function ensureLaunchAgentLoadedAfterKickstartRecovery(params: {
     env: params.env,
   });
   if (!bootstrapRecovery.ok) {
+    const launchctlDetail = (status.stderr || status.stdout || "").trim();
+    if (launchctlDetail && !bootstrapRecovery.detail) {
+      return {
+        ok: false,
+        detail: launchctlDetail,
+      };
+    }
     return bootstrapRecovery;
   }
 
@@ -465,11 +472,16 @@ async function ensureLaunchAgentLoadedAfterKickstartRecovery(params: {
   if (reloaded.code === 0) {
     return { ok: true };
   }
+  const detail = (
+    reloaded.stderr ||
+    reloaded.stdout ||
+    status.stderr ||
+    status.stdout ||
+    ""
+  ).trim();
   return {
     ok: false,
-    detail:
-      (reloaded.stderr || reloaded.stdout).trim() ||
-      "LaunchAgent kickstart recovery did not restore a loadable service.",
+    detail: detail || "LaunchAgent kickstart recovery did not restore a loadable service.",
   };
 }
 
@@ -635,6 +647,19 @@ export async function restartLaunchAgent({
 
   const directStart = await execLaunchctl(["kickstart", "-k", serviceId]);
   if (directStart.code === 0) {
+    const recheck = await ensureLaunchAgentLoadedAfterKickstartRecovery({
+      env: serviceEnv,
+      domain,
+      label,
+      plistPath,
+    });
+    if (!recheck.ok) {
+      throw new Error(
+        `launchctl kickstart succeeded, but the service is not loadable after restart: ${
+          recheck.detail ?? "unknown error"
+        }`,
+      );
+    }
     try {
       stdout.write(`${formatLine("Restarted LaunchAgent", serviceId)}\n`);
     } catch (err: unknown) {
@@ -729,8 +754,39 @@ export async function restartLaunchAgent({
         );
       }
     }
+    const recoveryState = await ensureLaunchAgentLoadedAfterKickstartRecovery({
+      env: serviceEnv,
+      domain,
+      label,
+      plistPath,
+    });
+    if (!recoveryState.ok) {
+      throw new Error(
+        `launchctl kickstart failed: ${detail} Recovery reapplication failed: ${
+          recoveryState.detail ?? "LaunchAgent is registered but not loadable."
+        }`,
+      );
+    }
+    try {
+      stdout.write(`${formatLine("Restarted LaunchAgent", serviceId)}\n`);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EPIPE") {
+        throw err;
+      }
+    }
+    return;
+  }
+  const restarted = await ensureLaunchAgentLoadedAfterKickstartRecovery({
+    env: serviceEnv,
+    domain,
+    label,
+    plistPath,
+  });
+  if (!restarted.ok) {
     throw new Error(
-      `launchctl kickstart failed: ${detail} Recovery reapplication failed: LaunchAgent is registered but not loadable.`,
+      `launchctl kickstart succeeded, but the service is not loadable after restart: ${
+        restarted.detail ?? "unknown error"
+      }`,
     );
   }
   try {
