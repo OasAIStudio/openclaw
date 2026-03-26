@@ -33,6 +33,186 @@ export function stripMinimaxToolCallXml(text: string): string {
   return cleaned;
 }
 
+type KimiFunctionCallToolBlock = {
+  type: "toolCall";
+  name: string;
+  arguments: Record<string, string>;
+};
+
+type KimiFunctionCallParseResult = {
+  text: string;
+  toolCalls: KimiFunctionCallToolBlock[];
+};
+
+const KIMI_INVOKE_RE = /<invoke\b[^>]*\bname\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/invoke>/gi;
+const KIMI_PARAMETER_RE =
+  /<parameter\b[^>]*\bname\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/parameter>/gi;
+
+function decodeXmlEscapes(value: string): string {
+  return value
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#(\d+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 10)));
+}
+
+function parseKimiParameters(xml: string): Record<string, string> {
+  const args: Record<string, string> = {};
+  for (const match of xml.matchAll(KIMI_PARAMETER_RE)) {
+    const rawName = match[2];
+    const rawValue = match[3] ?? "";
+    const name = rawName?.trim();
+    if (!name) {
+      continue;
+    }
+    args[name] = decodeXmlEscapes(rawValue).trim();
+  }
+  return args;
+}
+
+export function parseKimiFunctionCallsFromXml(text: string): KimiFunctionCallParseResult {
+  if (!text || !/<invoke\b/i.test(text)) {
+    return { text, toolCalls: [] };
+  }
+
+  const toolCalls: KimiFunctionCallToolBlock[] = [];
+  const cleanedParts: string[] = [];
+  let cursor = 0;
+  let matched = false;
+
+  for (const match of text.matchAll(KIMI_INVOKE_RE)) {
+    matched = true;
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    cleanedParts.push(text.slice(cursor, start));
+    cursor = end;
+
+    const rawName = match[2];
+    const name = rawName?.trim();
+    if (!name) {
+      continue;
+    }
+
+    const argumentsBody = match[3] ?? "";
+    toolCalls.push({
+      type: "toolCall",
+      name,
+      arguments: parseKimiParameters(argumentsBody),
+    });
+  }
+
+  if (!matched) {
+    return { text, toolCalls: [] };
+  }
+
+  cleanedParts.push(text.slice(cursor));
+  return {
+    text: cleanedParts.join(""),
+    toolCalls,
+  };
+}
+
+export function rewriteKimiXmlToolCallsInMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") {
+    const parsed = parseKimiFunctionCallsFromXml(content);
+    if (!parsed.toolCalls.length) {
+      if (parsed.text === content) {
+        return false;
+      }
+      (message as { content: string }).content = parsed.text;
+      return true;
+    }
+
+    const nextContent: unknown[] = [];
+    if (parsed.text.length > 0) {
+      nextContent.push({ type: "text", text: parsed.text });
+    }
+    for (const toolCall of parsed.toolCalls) {
+      nextContent.push(toolCall);
+    }
+
+    (message as { content: unknown[] }).content = nextContent;
+    return true;
+  }
+  if (!Array.isArray(content)) {
+    return false;
+  }
+
+  let changed = false;
+  const nextContent: unknown[] = [];
+
+  for (const block of content) {
+    if (!block || typeof block !== "object" || (block as { type?: unknown }).type !== "text") {
+      nextContent.push(block);
+      continue;
+    }
+    const typedBlock = block as { text?: unknown };
+    if (typeof typedBlock.text !== "string") {
+      nextContent.push(block);
+      continue;
+    }
+
+    const parsed = parseKimiFunctionCallsFromXml(typedBlock.text);
+    if (parsed.toolCalls.length > 0) {
+      const cleaned = parsed.text;
+      if (cleaned.length > 0) {
+        nextContent.push({ ...(block as Record<string, unknown>), text: cleaned });
+      }
+      for (const toolCall of parsed.toolCalls) {
+        nextContent.push(toolCall);
+      }
+      changed = true;
+      continue;
+    }
+    if (parsed.text !== typedBlock.text) {
+      nextContent.push({ ...(block as Record<string, unknown>), text: parsed.text });
+      changed = true;
+      continue;
+    }
+    nextContent.push(block);
+  }
+
+  if (!changed) {
+    return false;
+  }
+  (message as { content: unknown[] }).content = nextContent;
+  return true;
+}
+
+/**
+ * Strip model control tokens leaked into assistant text output.
+ *
+ * Models like GLM-5 and DeepSeek sometimes emit internal delimiter tokens
+ * (e.g. `<|assistant|>`, `<|tool_call_result_begin|>`, `<｜begin▁of▁sentence｜>`)
+ * in their responses. These use the universal `<|...|>` convention (ASCII or
+ * full-width pipe variants) and should never reach end users.
+ *
+ * This is a provider bug — no upstream fix tracked yet.
+ * Remove this function when upstream providers stop leaking tokens.
+ * @see https://github.com/openclaw/openclaw/issues/40020
+ */
+// Match both ASCII pipe <|...|> and full-width pipe <｜...｜> (U+FF5C) variants.
+const MODEL_SPECIAL_TOKEN_RE = /<[|｜][^|｜]*[|｜]>/g;
+
+export function stripModelSpecialTokens(text: string): string {
+  if (!text) {
+    return text;
+  }
+  if (!MODEL_SPECIAL_TOKEN_RE.test(text)) {
+    return text;
+  }
+  MODEL_SPECIAL_TOKEN_RE.lastIndex = 0;
+  return text.replace(MODEL_SPECIAL_TOKEN_RE, " ").replace(/  +/g, " ").trim();
+}
+
 /**
  * Strip downgraded tool call text representations that leak into text content.
  * When replaying history to Gemini, tool calls without `thought_signature` are
@@ -212,7 +392,7 @@ export function extractAssistantText(msg: AssistantMessage): string {
     extractTextFromChatContent(msg.content, {
       sanitizeText: (text) =>
         stripThinkingTagsFromText(
-          stripDowngradedToolCallText(stripMinimaxToolCallXml(text)),
+          stripDowngradedToolCallText(stripModelSpecialTokens(stripMinimaxToolCallXml(text))),
         ).trim(),
       joinWith: "\n",
       normalizeText: (text) => text.trim(),
@@ -333,7 +513,9 @@ export function promoteThinkingTagsToBlocks(message: AssistantMessage): void {
   if (!Array.isArray(message.content)) {
     return;
   }
-  const hasThinkingBlock = message.content.some((block) => block.type === "thinking");
+  const hasThinkingBlock = message.content.some(
+    (block) => block && typeof block === "object" && block.type === "thinking",
+  );
   if (hasThinkingBlock) {
     return;
   }
@@ -342,6 +524,10 @@ export function promoteThinkingTagsToBlocks(message: AssistantMessage): void {
   let changed = false;
 
   for (const block of message.content) {
+    if (!block || typeof block !== "object" || !("type" in block)) {
+      next.push(block);
+      continue;
+    }
     if (block.type !== "text") {
       next.push(block);
       continue;

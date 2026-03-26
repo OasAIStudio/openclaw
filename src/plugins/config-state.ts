@@ -11,7 +11,16 @@ export type NormalizedPluginsConfig = {
   slots: {
     memory?: string | null;
   };
-  entries: Record<string, { enabled?: boolean; config?: unknown }>;
+  entries: Record<
+    string,
+    {
+      enabled?: boolean;
+      hooks?: {
+        allowPromptInjection?: boolean;
+      };
+      config?: unknown;
+    }
+  >;
 };
 
 export const BUNDLED_ENABLED_BY_DEFAULT = new Set<string>([
@@ -41,6 +50,28 @@ const normalizeSlotValue = (value: unknown): string | null | undefined => {
   return trimmed;
 };
 
+const RESERVED_PLUGIN_ENTRY_KEYS = new Set(["enabled", "hooks", "config"]);
+
+const normalizePluginEntryConfig = (
+  entry: Record<string, unknown>,
+): Record<string, unknown> | undefined => {
+  let config: Record<string, unknown> | undefined;
+  const entryConfig = entry.config;
+  if (entryConfig && typeof entryConfig === "object" && !Array.isArray(entryConfig)) {
+    config = { ...entryConfig };
+  }
+  for (const [key, value] of Object.entries(entry)) {
+    if (RESERVED_PLUGIN_ENTRY_KEYS.has(key)) {
+      continue;
+    }
+    if (!config) {
+      config = {};
+    }
+    config[key] = value;
+  }
+  return config;
+};
+
 const normalizePluginEntries = (entries: unknown): NormalizedPluginsConfig["entries"] => {
   if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
     return {};
@@ -55,9 +86,25 @@ const normalizePluginEntries = (entries: unknown): NormalizedPluginsConfig["entr
       continue;
     }
     const entry = value as Record<string, unknown>;
+    const hooksRaw = entry.hooks;
+    const hooks =
+      hooksRaw && typeof hooksRaw === "object" && !Array.isArray(hooksRaw)
+        ? {
+            allowPromptInjection: (hooksRaw as { allowPromptInjection?: unknown })
+              .allowPromptInjection,
+          }
+        : undefined;
+    const normalizedHooks =
+      hooks && typeof hooks.allowPromptInjection === "boolean"
+        ? {
+            allowPromptInjection: hooks.allowPromptInjection,
+          }
+        : undefined;
+    const pluginConfig = normalizePluginEntryConfig(entry);
     normalized[key] = {
       enabled: typeof entry.enabled === "boolean" ? entry.enabled : undefined,
-      config: "config" in entry ? entry.config : undefined,
+      hooks: normalizedHooks,
+      config: pluginConfig,
     };
   }
   return normalized;
@@ -173,18 +220,18 @@ export function resolveEnableState(
   if (config.deny.includes(id)) {
     return { enabled: false, reason: "blocked by denylist" };
   }
-  if (config.allow.length > 0 && !config.allow.includes(id)) {
-    return { enabled: false, reason: "not in allowlist" };
+  const entry = config.entries[id];
+  if (entry?.enabled === false) {
+    return { enabled: false, reason: "disabled in config" };
   }
   if (config.slots.memory === id) {
     return { enabled: true };
   }
-  const entry = config.entries[id];
+  if (config.allow.length > 0 && !config.allow.includes(id)) {
+    return { enabled: false, reason: "not in allowlist" };
+  }
   if (entry?.enabled === true) {
     return { enabled: true };
-  }
-  if (entry?.enabled === false) {
-    return { enabled: false, reason: "disabled in config" };
   }
   if (origin === "bundled" && BUNDLED_ENABLED_BY_DEFAULT.has(id)) {
     return { enabled: true };

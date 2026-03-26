@@ -474,6 +474,25 @@ describe("createFollowupRunner messaging tool dedupe", () => {
     );
     expect(onBlockReply).not.toHaveBeenCalled();
   });
+
+  it("passes queued followup messageId through to routeReply", async () => {
+    const { onBlockReply } = await runMessagingCase({
+      agentResult: { payloads: [{ text: "hello world!" }] },
+      queued: {
+        ...baseQueuedRun("webchat"),
+        originatingChannel: "discord",
+        originatingTo: "channel:C1",
+        messageId: "webchat-msg-1",
+      } as FollowupRun,
+    });
+
+    expect(routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "webchat-msg-1",
+      }),
+    );
+    expect(onBlockReply).not.toHaveBeenCalled();
+  });
 });
 
 describe("createFollowupRunner typing cleanup", () => {

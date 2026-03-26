@@ -252,6 +252,55 @@ describe("gateway sessions patch", () => {
     expect(entry.spawnDepth).toBe(2);
   });
 
+  test("sets spawnedBy for ACP sessions", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        storeKey: "agent:main:acp:child",
+        patch: {
+          key: "agent:main:acp:child",
+          spawnedBy: "agent:main:main",
+        },
+      }),
+    );
+    expect(entry.spawnedBy).toBe("agent:main:main");
+  });
+
+  test("sets spawnedBy for legacy ACP sessions using -acp agent-id marker", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        storeKey: "agent:qwen-acp:child",
+        patch: {
+          key: "agent:qwen-acp:child",
+          spawnedBy: "agent:qwen:main",
+        },
+      }),
+    );
+    expect(entry.spawnedBy).toBe("agent:qwen:main");
+  });
+
+  test("sets spawnedBy for bare acp-key sessions", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        storeKey: "acp:main:child",
+        patch: {
+          key: "acp:main:child",
+          spawnedBy: "agent:main:main",
+        },
+      }),
+    );
+    expect(entry.spawnedBy).toBe("agent:main:main");
+  });
+
+  test("sets spawnDepth for ACP sessions", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        storeKey: "agent:main:acp:child",
+        patch: { key: "agent:main:acp:child", spawnDepth: 2 },
+      }),
+    );
+    expect(entry.spawnDepth).toBe(2);
+  });
+
   test("rejects spawnDepth on non-subagent sessions", async () => {
     const result = await runPatch({
       patch: { key: MAIN_SESSION_KEY, spawnDepth: 1 },

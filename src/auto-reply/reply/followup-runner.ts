@@ -9,7 +9,9 @@ import type { SessionEntry } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
+import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
 import { defaultRuntime } from "../../runtime.js";
+import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
 import type { OriginatingChannelType } from "../templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -99,6 +101,7 @@ export function createFollowupRunner(params: {
           channel: originatingChannel,
           to: originatingTo,
           sessionKey: queued.run.sessionKey,
+          messageId: queued.messageId,
           accountId: queued.originatingAccountId,
           threadId: queued.originatingThreadId,
           cfg: queued.run.config,
@@ -131,10 +134,17 @@ export function createFollowupRunner(params: {
   return async (queued: FollowupRun) => {
     try {
       const runId = crypto.randomUUID();
+      const shouldSurfaceToControlUi = isInternalMessageChannel(
+        resolveOriginMessageProvider({
+          originatingChannel: queued.originatingChannel,
+          provider: queued.run.messageProvider,
+        }),
+      );
       if (queued.run.sessionKey) {
         registerAgentRunContext(runId, {
           sessionKey: queued.run.sessionKey,
           verboseLevel: queued.run.verboseLevel,
+          isControlUiVisible: shouldSurfaceToControlUi,
         });
       }
       let autoCompactionCompleted = false;
@@ -147,17 +157,33 @@ export function createFollowupRunner(params: {
         activeSessionEntry?.systemPromptReport,
       );
       try {
+        // Apply media understanding to queued messages before running the agent
+        // This mirrors the behavior in dispatch-acp.ts
+        if (queued.ctx && !queued.ctx.MediaUnderstanding?.length) {
+          try {
+            await applyMediaUnderstanding({
+              ctx: queued.ctx,
+              cfg: queued.run.config,
+            });
+          } catch (err) {
+            logVerbose(
+              `followup-runner: media understanding failed, proceeding with raw content: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+
         const fallbackResult = await runWithModelFallback({
           cfg: queued.run.config,
           provider: queued.run.provider,
           model: queued.run.model,
+          runId,
           agentDir: queued.run.agentDir,
           fallbacksOverride: resolveRunModelFallbacksOverride({
             cfg: queued.run.config,
             agentId: queued.run.agentId,
             sessionKey: queued.run.sessionKey,
           }),
-          run: async (provider, model) => {
+          run: async (provider, model, runOptions) => {
             const authProfile = resolveRunAuthProfile(queued.run, provider);
             const result = await runEmbeddedPiAgent({
               sessionId: queued.run.sessionId,
@@ -200,6 +226,7 @@ export function createFollowupRunner(params: {
               bashElevated: queued.run.bashElevated,
               timeoutMs: queued.run.timeoutMs,
               runId,
+              allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
               blockReplyBreak: queued.run.blockReplyBreak,
               bootstrapPromptWarningSignaturesSeen,
               bootstrapPromptWarningSignature:

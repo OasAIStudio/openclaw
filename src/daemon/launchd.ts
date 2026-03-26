@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { parseStrictInteger, parseStrictPositiveInteger } from "../infra/parse-finite-number.js";
 import {
   GATEWAY_LAUNCH_AGENT_LABEL,
   resolveGatewayServiceDescription,
@@ -23,6 +24,9 @@ import type {
   GatewayServiceInstallArgs,
   GatewayServiceManageArgs,
 } from "./service-types.js";
+
+const LAUNCH_AGENT_DIR_MODE = 0o755;
+const LAUNCH_AGENT_PLIST_MODE = 0o644;
 
 function resolveLaunchAgentLabel(args?: { env?: Record<string, string | undefined> }): string {
   const envLabel = args?.env?.OPENCLAW_LAUNCHD_LABEL?.trim();
@@ -111,6 +115,20 @@ function resolveGuiDomain(): string {
   return `gui/${process.getuid()}`;
 }
 
+async function ensureSecureDirectory(targetPath: string): Promise<void> {
+  await fs.mkdir(targetPath, { recursive: true, mode: LAUNCH_AGENT_DIR_MODE });
+  try {
+    const stat = await fs.stat(targetPath);
+    const mode = stat.mode & 0o777;
+    const tightenedMode = mode & ~0o022;
+    if (tightenedMode !== mode) {
+      await fs.chmod(targetPath, tightenedMode);
+    }
+  } catch {
+    // Best effort: keep install working even if chmod/stat is unavailable.
+  }
+}
+
 export type LaunchctlPrintInfo = {
   state?: string;
   pid?: number;
@@ -127,15 +145,15 @@ export function parseLaunchctlPrint(output: string): LaunchctlPrintInfo {
   }
   const pidValue = entries.pid;
   if (pidValue) {
-    const pid = Number.parseInt(pidValue, 10);
-    if (Number.isFinite(pid)) {
+    const pid = parseStrictPositiveInteger(pidValue);
+    if (pid !== undefined) {
       info.pid = pid;
     }
   }
   const exitStatusValue = entries["last exit status"];
   if (exitStatusValue) {
-    const status = Number.parseInt(exitStatusValue, 10);
-    if (Number.isFinite(status)) {
+    const status = parseStrictInteger(exitStatusValue);
+    if (status !== undefined) {
       info.lastExitStatus = status;
     }
   }
@@ -206,6 +224,9 @@ export async function repairLaunchAgentBootstrap(args: {
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env });
   const plistPath = resolveLaunchAgentPlistPath(env);
+  // launchd can persist "disabled" state after bootout; clear it before bootstrap
+  // (matches the same guard in installLaunchAgent and restartLaunchAgent).
+  await execLaunchctl(["enable", `${domain}/${label}`]);
   const boot = await execLaunchctl(["bootstrap", domain, plistPath]);
   if (boot.code !== 0) {
     return { ok: false, detail: (boot.stderr || boot.stdout).trim() || undefined };
@@ -213,6 +234,47 @@ export async function repairLaunchAgentBootstrap(args: {
   const kick = await execLaunchctl(["kickstart", "-k", `${domain}/${label}`]);
   if (kick.code !== 0) {
     return { ok: false, detail: (kick.stderr || kick.stdout).trim() || undefined };
+  }
+  const recheck = await ensureLaunchAgentListedAfterBootstrap({ domain, label });
+  if (!recheck.ok) {
+    return recheck;
+  }
+  return { ok: true };
+}
+
+type LaunchAgentRecoveryResult = {
+  ok: boolean;
+  detail?: string;
+};
+
+async function recoverLaunchAgentRegistration(args: {
+  domain: string;
+  label: string;
+  plistPath: string;
+}): Promise<LaunchAgentRecoveryResult> {
+  const serviceId = `${args.domain}/${args.label}`;
+  const printed = await execLaunchctl(["print", serviceId]);
+  if (printed.code === 0) {
+    return await ensureLaunchAgentListedAfterBootstrap({
+      domain: args.domain,
+      label: args.label,
+    });
+  }
+
+  await execLaunchctl(["enable", serviceId]);
+  const boot = await execLaunchctl(["bootstrap", args.domain, args.plistPath]);
+  if (boot.code !== 0) {
+    return {
+      ok: false,
+      detail: (boot.stderr || boot.stdout).trim() || undefined,
+    };
+  }
+  const recheck = await ensureLaunchAgentListedAfterBootstrap({
+    domain: args.domain,
+    label: args.label,
+  });
+  if (!recheck.ok) {
+    return recheck;
   }
   return { ok: true };
 }
@@ -255,8 +317,8 @@ export async function uninstallLegacyLaunchAgents({
     return agents;
   }
 
-  const home = resolveHomeDir(env);
-  const trashDir = path.join(home, ".Trash");
+  const home = toPosixPath(resolveHomeDir(env));
+  const trashDir = path.posix.join(home, ".Trash");
   try {
     await fs.mkdir(trashDir, { recursive: true });
   } catch {
@@ -302,8 +364,8 @@ export async function uninstallLaunchAgent({
     return;
   }
 
-  const home = resolveHomeDir(env);
-  const trashDir = path.join(home, ".Trash");
+  const home = toPosixPath(resolveHomeDir(env));
+  const trashDir = path.posix.join(home, ".Trash");
   const dest = path.join(trashDir, `${label}.plist`);
   try {
     await fs.mkdir(trashDir, { recursive: true });
@@ -323,6 +385,13 @@ function isLaunchctlNotLoaded(res: { stdout: string; stderr: string; code: numbe
   );
 }
 
+function isLaunchAgentLabelListed(output: string, label: string): boolean {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .some((line) => line.split(/\s+/).at(-1) === label);
+}
+
 function isUnsupportedGuiDomain(detail: string): boolean {
   const normalized = detail.toLowerCase();
   return (
@@ -338,6 +407,70 @@ async function sleepMs(ms: number): Promise<void> {
   await new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function ensureLaunchAgentListedAfterBootstrap(params: {
+  domain: string;
+  label: string;
+}): Promise<LaunchAgentRecoveryResult> {
+  const serviceId = `${params.domain}/${params.label}`;
+  const print = await execLaunchctl(["print", serviceId]);
+  if (print.code === 0) {
+    return { ok: true };
+  }
+  const list = await execLaunchctl(["list"]);
+  if (list.code !== 0) {
+    return {
+      ok: false,
+      detail: (list.stderr || list.stdout).trim() || "launchctl list failed",
+    };
+  }
+  if (!isLaunchAgentLabelListed(list.stdout, params.label)) {
+    return {
+      ok: false,
+      detail: "LaunchAgent registration was not re-listable after bootstrap",
+    };
+  }
+  return { ok: true };
+}
+
+async function ensureLaunchAgentLoadedAfterKickstartRecovery(params: {
+  env: GatewayServiceEnv;
+  domain: string;
+  label: string;
+  plistPath: string;
+}): Promise<LaunchAgentRecoveryResult> {
+  const serviceId = `${params.domain}/${params.label}`;
+  const status = await execLaunchctl(["print", serviceId]);
+  if (status.code === 0) {
+    return { ok: true };
+  }
+
+  const bootstrapRecovery = await repairLaunchAgentBootstrap({
+    env: params.env,
+  });
+  if (!bootstrapRecovery.ok) {
+    return bootstrapRecovery;
+  }
+
+  const listed = await ensureLaunchAgentListedAfterBootstrap({
+    domain: params.domain,
+    label: params.label,
+  });
+  if (!listed.ok) {
+    return listed;
+  }
+
+  const reloaded = await execLaunchctl(["print", serviceId]);
+  if (reloaded.code === 0) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    detail:
+      (reloaded.stderr || reloaded.stdout).trim() ||
+      "LaunchAgent kickstart recovery did not restore a loadable service.",
+  };
 }
 
 async function waitForPidExit(pid: number): Promise<void> {
@@ -359,14 +492,33 @@ async function waitForPidExit(pid: number): Promise<void> {
   }
 }
 
+async function terminateLaunchdPidWithSigterm(pid: number): Promise<void> {
+  if (!Number.isFinite(pid) || pid <= 1) {
+    return;
+  }
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  await waitForPidExit(pid);
+}
+
 export async function stopLaunchAgent({ stdout, env }: GatewayServiceControlArgs): Promise<void> {
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env });
-  const res = await execLaunchctl(["bootout", `${domain}/${label}`]);
-  if (res.code !== 0 && !isLaunchctlNotLoaded(res)) {
-    throw new Error(`launchctl bootout failed: ${res.stderr || res.stdout}`.trim());
+  const runtime = await execLaunchctl(["print", `${domain}/${label}`]);
+  const previousPid =
+    runtime.code === 0
+      ? parseLaunchctlPrint(runtime.stdout || runtime.stderr || "").pid
+      : undefined;
+  const serviceId = `${domain}/${label}`;
+  if (typeof previousPid === "number") {
+    await terminateLaunchdPidWithSigterm(previousPid);
   }
-  stdout.write(`${formatLine("Stopped LaunchAgent", `${domain}/${label}`)}\n`);
+  stdout.write(`${formatLine("Stopped LaunchAgent", serviceId)}\n`);
 }
 
 export async function installLaunchAgent({
@@ -378,7 +530,7 @@ export async function installLaunchAgent({
   description,
 }: GatewayServiceInstallArgs): Promise<{ plistPath: string }> {
   const { logDir, stdoutPath, stderrPath } = resolveGatewayLogPaths(env);
-  await fs.mkdir(logDir, { recursive: true });
+  await ensureSecureDirectory(logDir);
 
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env });
@@ -394,7 +546,11 @@ export async function installLaunchAgent({
   }
 
   const plistPath = resolveLaunchAgentPlistPathForLabel(env, label);
-  await fs.mkdir(path.dirname(plistPath), { recursive: true });
+  const home = toPosixPath(resolveHomeDir(env));
+  const libraryDir = path.posix.join(home, "Library");
+  await ensureSecureDirectory(home);
+  await ensureSecureDirectory(libraryDir);
+  await ensureSecureDirectory(path.dirname(plistPath));
 
   const serviceDescription = resolveGatewayServiceDescription({ env, environment, description });
   const plist = buildLaunchAgentPlist({
@@ -406,7 +562,8 @@ export async function installLaunchAgent({
     stderrPath,
     environment,
   });
-  await fs.writeFile(plistPath, plist, "utf8");
+  await fs.writeFile(plistPath, plist, { encoding: "utf8", mode: LAUNCH_AGENT_PLIST_MODE });
+  await fs.chmod(plistPath, LAUNCH_AGENT_PLIST_MODE).catch(() => undefined);
 
   await execLaunchctl(["bootout", domain, plistPath]);
   await execLaunchctl(["unload", plistPath]);
@@ -450,21 +607,58 @@ export async function restartLaunchAgent({
   const domain = resolveGuiDomain();
   const label = resolveLaunchAgentLabel({ env: serviceEnv });
   const plistPath = resolveLaunchAgentPlistPath(serviceEnv);
+  const serviceId = `${domain}/${label}`;
 
-  const runtime = await execLaunchctl(["print", `${domain}/${label}`]);
+  const runtime = await execLaunchctl(["print", serviceId]);
   const previousPid =
     runtime.code === 0
       ? parseLaunchctlPrint(runtime.stdout || runtime.stderr || "").pid
       : undefined;
+  const ensureLaunchAgentListedOrRecovered = async (): Promise<LaunchAgentRecoveryResult> => {
+    const listed = await ensureLaunchAgentListedAfterBootstrap({ domain, label });
+    if (listed.ok) {
+      return listed;
+    }
+    const recovery = await recoverLaunchAgentRegistration({
+      domain,
+      label,
+      plistPath,
+    });
+    if (!recovery.ok) {
+      return recovery;
+    }
+    return ensureLaunchAgentListedAfterBootstrap({
+      domain,
+      label,
+    });
+  };
 
-  const stop = await execLaunchctl(["bootout", `${domain}/${label}`]);
-  if (stop.code !== 0 && !isLaunchctlNotLoaded(stop)) {
-    throw new Error(`launchctl bootout failed: ${stop.stderr || stop.stdout}`.trim());
+  const directStart = await execLaunchctl(["kickstart", "-k", serviceId]);
+  if (directStart.code === 0) {
+    try {
+      stdout.write(`${formatLine("Restarted LaunchAgent", serviceId)}\n`);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EPIPE") {
+        throw err;
+      }
+    }
+    return;
   }
+
   if (typeof previousPid === "number") {
     await waitForPidExit(previousPid);
   }
 
+  if (runtime.code === 0) {
+    const stop = await execLaunchctl(["bootout", serviceId]);
+    if (stop.code !== 0 && !isLaunchctlNotLoaded(stop)) {
+      throw new Error(`launchctl bootout failed: ${stop.stderr || stop.stdout}`.trim());
+    }
+  }
+
+  // launchd can persist "disabled" state after bootout; clear it before bootstrap
+  // (matches the same guard in installLaunchAgent).
+  await execLaunchctl(["enable", serviceId]);
   const boot = await execLaunchctl(["bootstrap", domain, plistPath]);
   if (boot.code !== 0) {
     const detail = (boot.stderr || boot.stdout).trim();
@@ -479,15 +673,68 @@ export async function restartLaunchAgent({
         ].join("\n"),
       );
     }
-    throw new Error(`launchctl bootstrap failed: ${detail}`);
+    const recovery = await ensureLaunchAgentListedOrRecovered();
+    if (!recovery.ok) {
+      throw new Error(`launchctl bootstrap failed: ${detail}`);
+    }
   }
 
-  const start = await execLaunchctl(["kickstart", "-k", `${domain}/${label}`]);
+  const start = await execLaunchctl(["kickstart", "-k", serviceId]);
   if (start.code !== 0) {
-    throw new Error(`launchctl kickstart failed: ${start.stderr || start.stdout}`.trim());
+    const detail = (start.stderr || start.stdout || "kickstart failed").trim();
+    const repair = await repairLaunchAgentBootstrap({ env: serviceEnv });
+    if (repair.ok) {
+      const recheck = await ensureLaunchAgentLoadedAfterKickstartRecovery({
+        env: serviceEnv,
+        domain,
+        label,
+        plistPath,
+      });
+      if (recheck.ok) {
+        try {
+          stdout.write(`${formatLine("Restarted LaunchAgent", serviceId)}\n`);
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException)?.code !== "EPIPE") {
+            throw err;
+          }
+        }
+        return;
+      }
+    }
+
+    const recovery = await recoverLaunchAgentRegistration({
+      domain,
+      label,
+      plistPath,
+    });
+    if (!recovery.ok) {
+      throw new Error(
+        `launchctl kickstart failed: ${detail} Recovery after failure failed: ${
+          recovery.detail ?? "unknown error"
+        }`,
+      );
+    }
+
+    const launchAgentState = await ensureLaunchAgentListedAfterBootstrap({
+      domain,
+      label,
+    });
+    if (!launchAgentState.ok) {
+      const recovery = await ensureLaunchAgentListedOrRecovered();
+      if (!recovery.ok) {
+        throw new Error(
+          `launchctl kickstart failed: ${detail} Recovery reapplication failed: ${
+            recovery.detail ?? "unknown error"
+          }`,
+        );
+      }
+    }
+    throw new Error(
+      `launchctl kickstart failed: ${detail} Recovery reapplication failed: LaunchAgent is registered but not loadable.`,
+    );
   }
   try {
-    stdout.write(`${formatLine("Restarted LaunchAgent", `${domain}/${label}`)}\n`);
+    stdout.write(`${formatLine("Restarted LaunchAgent", serviceId)}\n`);
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException)?.code !== "EPIPE") {
       throw err;

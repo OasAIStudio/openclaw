@@ -11,13 +11,19 @@ import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.j
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
+import { saveMediaBuffer } from "../../media/store.js";
+import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import {
   stripInlineDirectiveTagsForDisplay,
   stripInlineDirectiveTagsFromMessageForDisplay,
 } from "../../utils/directive-tags.js";
-import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
+import {
+  INTERNAL_MESSAGE_CHANNEL,
+  isWebchatClient,
+  normalizeMessageChannel,
+} from "../../utils/message-channel.js";
 import {
   abortChatRunById,
   abortChatRunsForSessionKey,
@@ -28,7 +34,12 @@ import {
 } from "../chat-abort.js";
 import { type ChatImageContent, parseMessageWithAttachments } from "../chat-attachments.js";
 import { stripEnvelopeFromMessage, stripEnvelopeFromMessages } from "../chat-sanitize.js";
-import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
+import {
+  GATEWAY_CLIENT_CAPS,
+  GATEWAY_CLIENT_MODES,
+  GATEWAY_CLIENT_NAMES,
+  hasGatewayClientCap,
+} from "../protocol/client-info.js";
 import {
   ErrorCodes,
   errorShape,
@@ -38,6 +49,7 @@ import {
   validateChatInjectParams,
   validateChatSendParams,
 } from "../protocol/index.js";
+import { CHAT_SEND_SESSION_KEY_MAX_LENGTH } from "../protocol/schema/primitives.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import {
   capArrayByJsonBytes,
@@ -49,8 +61,15 @@ import { formatForLog } from "../ws-log.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 import { setGatewayDedupeEntry } from "./agent-wait-dedupe.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
-import { appendInjectedAssistantMessageToTranscript } from "./chat-transcript-inject.js";
-import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
+import {
+  appendInjectedAssistantMessageToTranscript,
+  appendMessageToTranscript,
+} from "./chat-transcript-inject.js";
+import type {
+  GatewayRequestContext,
+  GatewayRequestHandlerOptions,
+  GatewayRequestHandlers,
+} from "./types.js";
 
 type TranscriptAppendResult = {
   ok: boolean;
@@ -71,6 +90,7 @@ type AbortedPartialSnapshot = {
 const CHAT_HISTORY_TEXT_MAX_CHARS = 12_000;
 const CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES = 128 * 1024;
 const CHAT_HISTORY_OVERSIZED_PLACEHOLDER = "[chat.history omitted: message too large]";
+const CHAT_SEND_ATTACHMENT_MAX_BYTES = 5_000_000;
 let chatHistoryPlaceholderEmitCount = 0;
 const CHANNEL_AGNOSTIC_SESSION_SCOPES = new Set([
   "main",
@@ -86,6 +106,118 @@ const CHANNEL_AGNOSTIC_SESSION_SCOPES = new Set([
   "topic",
 ]);
 const CHANNEL_SCOPED_SESSION_SHAPES = new Set(["direct", "dm", "group", "channel"]);
+
+type ChatSendDeliveryEntry = {
+  deliveryContext?: {
+    channel?: string;
+    to?: string;
+    accountId?: string;
+    threadId?: string | number;
+  };
+  lastChannel?: string;
+  lastTo?: string;
+  lastAccountId?: string;
+  lastThreadId?: string | number;
+};
+
+type ChatSendOriginatingRoute = {
+  originatingChannel: string;
+  originatingTo?: string;
+  accountId?: string;
+  messageThreadId?: string | number;
+  explicitDeliverRoute: boolean;
+};
+
+function resolveChatSendOriginatingRoute(params: {
+  client?: { mode?: string | null; id?: string | null } | null;
+  deliver?: boolean;
+  entry?: ChatSendDeliveryEntry;
+  hasConnectedClient?: boolean;
+  mainKey?: string;
+  sessionKey: string;
+}): ChatSendOriginatingRoute {
+  const shouldDeliverExternally = params.deliver === true;
+  if (!shouldDeliverExternally) {
+    return {
+      originatingChannel: INTERNAL_MESSAGE_CHANNEL,
+      explicitDeliverRoute: false,
+    };
+  }
+
+  const routeChannelCandidate = normalizeMessageChannel(
+    params.entry?.deliveryContext?.channel ?? params.entry?.lastChannel,
+  );
+  const routeToCandidate = params.entry?.deliveryContext?.to ?? params.entry?.lastTo;
+  const routeAccountIdCandidate =
+    params.entry?.deliveryContext?.accountId ?? params.entry?.lastAccountId ?? undefined;
+  const routeThreadIdCandidate =
+    params.entry?.deliveryContext?.threadId ?? params.entry?.lastThreadId;
+  if (params.sessionKey.length > CHAT_SEND_SESSION_KEY_MAX_LENGTH) {
+    return {
+      originatingChannel: INTERNAL_MESSAGE_CHANNEL,
+      explicitDeliverRoute: false,
+    };
+  }
+
+  const parsedSessionKey = parseAgentSessionKey(params.sessionKey);
+  const sessionScopeParts = (parsedSessionKey?.rest ?? params.sessionKey)
+    .split(":", 3)
+    .filter(Boolean);
+  const sessionScopeHead = sessionScopeParts[0];
+  const sessionChannelHint = normalizeMessageChannel(sessionScopeHead);
+  const normalizedSessionScopeHead = (sessionScopeHead ?? "").trim().toLowerCase();
+  const sessionPeerShapeCandidates = [sessionScopeParts[1], sessionScopeParts[2]]
+    .map((part) => (part ?? "").trim().toLowerCase())
+    .filter(Boolean);
+  const isChannelAgnosticSessionScope = CHANNEL_AGNOSTIC_SESSION_SCOPES.has(
+    normalizedSessionScopeHead,
+  );
+  const isChannelScopedSession = sessionPeerShapeCandidates.some((part) =>
+    CHANNEL_SCOPED_SESSION_SHAPES.has(part),
+  );
+  const hasLegacyChannelPeerShape =
+    !isChannelScopedSession &&
+    typeof sessionScopeParts[1] === "string" &&
+    sessionChannelHint === routeChannelCandidate;
+  const isFromWebchatClient = isWebchatClient(params.client);
+  const configuredMainKey = (params.mainKey ?? "main").trim().toLowerCase();
+  const isConfiguredMainSessionScope =
+    normalizedSessionScopeHead.length > 0 && normalizedSessionScopeHead === configuredMainKey;
+
+  // Webchat/Control UI clients never inherit external delivery routes, even when
+  // accessing channel-scoped sessions. External routes are only for non-webchat
+  // clients where the session key explicitly encodes an external target.
+  // Preserve the old configured-main contract: any connected non-webchat client
+  // may inherit the last external route even when client metadata is absent.
+  const canInheritDeliverableRoute = Boolean(
+    !isFromWebchatClient &&
+    sessionChannelHint &&
+    sessionChannelHint !== INTERNAL_MESSAGE_CHANNEL &&
+    ((!isChannelAgnosticSessionScope && (isChannelScopedSession || hasLegacyChannelPeerShape)) ||
+      (isConfiguredMainSessionScope && params.hasConnectedClient)),
+  );
+  const hasDeliverableRoute =
+    canInheritDeliverableRoute &&
+    routeChannelCandidate &&
+    routeChannelCandidate !== INTERNAL_MESSAGE_CHANNEL &&
+    typeof routeToCandidate === "string" &&
+    routeToCandidate.trim().length > 0;
+
+  if (!hasDeliverableRoute) {
+    return {
+      originatingChannel: INTERNAL_MESSAGE_CHANNEL,
+      explicitDeliverRoute: false,
+    };
+  }
+
+  return {
+    originatingChannel: routeChannelCandidate,
+    originatingTo: routeToCandidate,
+    accountId: routeAccountIdCandidate,
+    messageThreadId: routeThreadIdCandidate,
+    explicitDeliverRoute: true,
+  };
+}
 
 function stripDisallowedChatControlChars(message: string): string {
   let output = "";
@@ -106,6 +238,33 @@ export function sanitizeChatSendMessageInput(
     return { ok: false, error: "message must not contain null bytes" };
   }
   return { ok: true, message: stripDisallowedChatControlChars(normalized) };
+}
+
+function normalizeOptionalChatSystemReceipt(
+  value: unknown,
+): { ok: true; receipt?: string } | { ok: false; error: string } {
+  if (value == null) {
+    return { ok: true };
+  }
+  if (typeof value !== "string") {
+    return { ok: false, error: "systemProvenanceReceipt must be a string" };
+  }
+  const sanitized = sanitizeChatSendMessageInput(value);
+  if (!sanitized.ok) {
+    return sanitized;
+  }
+  const receipt = sanitized.message.trim();
+  return { ok: true, receipt: receipt || undefined };
+}
+
+function isAcpBridgeClient(client: GatewayRequestHandlerOptions["client"]): boolean {
+  const info = client?.connect?.client;
+  return (
+    info?.id === GATEWAY_CLIENT_NAMES.CLI &&
+    info?.mode === GATEWAY_CLIENT_MODES.CLI &&
+    info?.displayName === "ACP" &&
+    info?.version === "acp"
+  );
 }
 
 function truncateChatHistoryText(text: string): { text: string; truncated: boolean } {
@@ -440,6 +599,101 @@ function appendAssistantTranscriptMessage(params: {
   });
 }
 
+type ChatUserHistoryContentBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "image_url";
+      image_url: {
+        url: string;
+      };
+    };
+
+function buildChatUserHistoryContent(
+  message: string,
+  imageUrls: string[],
+): ChatUserHistoryContentBlock[] {
+  const content: ChatUserHistoryContentBlock[] = [];
+  const trimmedMessage = message.trim();
+  if (trimmedMessage) {
+    content.push({ type: "text", text: trimmedMessage });
+  }
+  for (const imageUrl of imageUrls) {
+    const trimmed = imageUrl.trim();
+    if (trimmed) {
+      content.push({ type: "image_url", image_url: { url: trimmed } });
+    }
+  }
+  return content;
+}
+
+async function persistChatImageAttachments(images: ChatImageContent[]): Promise<string[]> {
+  const imageUrls: string[] = [];
+  for (const image of images) {
+    const buffer = Buffer.from(image.data, "base64");
+    const saved = await saveMediaBuffer(buffer, image.mimeType, "", CHAT_SEND_ATTACHMENT_MAX_BYTES);
+    imageUrls.push(`/media/${saved.id}`);
+  }
+  return imageUrls;
+}
+
+function appendUserTranscriptMessage(params: {
+  sessionId: string;
+  message: string;
+  imageUrls: string[];
+  storePath: string | undefined;
+  sessionFile?: string;
+  agentId?: string;
+  createIfMissing?: boolean;
+  idempotencyKey?: string;
+  now?: number;
+}): TranscriptAppendResult {
+  const transcriptPath = resolveTranscriptPath({
+    sessionId: params.sessionId,
+    storePath: params.storePath,
+    sessionFile: params.sessionFile,
+    agentId: params.agentId,
+  });
+  if (!transcriptPath) {
+    return { ok: false, error: "transcript path not resolved" };
+  }
+
+  if (!fs.existsSync(transcriptPath)) {
+    if (!params.createIfMissing) {
+      return { ok: false, error: "transcript file not found" };
+    }
+    const ensured = ensureTranscriptFile({
+      transcriptPath,
+      sessionId: params.sessionId,
+    });
+    if (!ensured.ok) {
+      return { ok: false, error: ensured.error ?? "failed to create transcript file" };
+    }
+  }
+
+  if (params.idempotencyKey && transcriptHasIdempotencyKey(transcriptPath, params.idempotencyKey)) {
+    return { ok: true };
+  }
+
+  const content = buildChatUserHistoryContent(params.message, params.imageUrls);
+  if (content.length === 0) {
+    return { ok: false, error: "user message has no persistable content" };
+  }
+
+  const now = params.now ?? Date.now();
+  return appendMessageToTranscript({
+    transcriptPath,
+    message: {
+      role: "user",
+      content,
+      timestamp: now,
+      ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
+      api: "openclaw-webchat",
+      provider: "openclaw",
+      model: "webchat",
+    } as Parameters<typeof appendMessageToTranscript>[0]["message"],
+  });
+}
+
 function collectSessionAbortPartials(params: {
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   chatRunBuffers: Map<string, string>;
@@ -743,8 +997,21 @@ export const chatHandlers: GatewayRequestHandlers = {
         content?: unknown;
       }>;
       timeoutMs?: number;
+      systemInputProvenance?: InputProvenance;
+      systemProvenanceReceipt?: string;
       idempotencyKey: string;
     };
+    if ((p.systemInputProvenance || p.systemProvenanceReceipt) && !isAcpBridgeClient(client)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "system provenance fields are reserved for the ACP bridge",
+        ),
+      );
+      return;
+    }
     const sanitizedMessageResult = sanitizeChatSendMessageInput(p.message);
     if (!sanitizedMessageResult.ok) {
       respond(
@@ -754,7 +1021,14 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    const systemReceiptResult = normalizeOptionalChatSystemReceipt(p.systemProvenanceReceipt);
+    if (!systemReceiptResult.ok) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, systemReceiptResult.error));
+      return;
+    }
     const inboundMessage = sanitizedMessageResult.message;
+    const systemInputProvenance = normalizeInputProvenance(p.systemInputProvenance);
+    const systemProvenanceReceipt = systemReceiptResult.receipt;
     const stopCommand = isChatStopCommandText(inboundMessage);
     const normalizedAttachments = normalizeRpcAttachmentsToChatAttachments(p.attachments);
     const rawMessage = inboundMessage.trim();
@@ -771,7 +1045,7 @@ export const chatHandlers: GatewayRequestHandlers = {
     if (normalizedAttachments.length > 0) {
       try {
         const parsed = await parseMessageWithAttachments(inboundMessage, normalizedAttachments, {
-          maxBytes: 5_000_000,
+          maxBytes: CHAT_SEND_ATTACHMENT_MAX_BYTES,
           log: context.logGateway,
         });
         parsedMessage = parsed.message;
@@ -782,7 +1056,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       }
     }
     const rawSessionKey = p.sessionKey;
-    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const { cfg, storePath, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,
@@ -835,6 +1109,41 @@ export const chatHandlers: GatewayRequestHandlers = {
       return;
     }
 
+    let imageUrls: string[] = [];
+    if (parsedImages.length > 0) {
+      try {
+        imageUrls = await persistChatImageAttachments(parsedImages);
+      } catch (err) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, `failed to save image attachment: ${String(err)}`),
+        );
+        return;
+      }
+    }
+
+    const agentId = resolveSessionAgentId({
+      sessionKey,
+      config: cfg,
+    });
+    const userAppendResult = appendUserTranscriptMessage({
+      sessionId: entry?.sessionId ?? clientRunId,
+      storePath,
+      sessionFile: entry?.sessionFile,
+      agentId,
+      createIfMissing: true,
+      message: parsedMessage,
+      imageUrls,
+      idempotencyKey: clientRunId,
+      now,
+    });
+    if (!userAppendResult.ok) {
+      context.logGateway.warn(
+        `webchat user transcript append failed: ${userAppendResult.error ?? "unknown error"}`,
+      );
+    }
+
     try {
       const abortController = new AbortController();
       context.chatAbortControllers.set(clientRunId, {
@@ -855,68 +1164,42 @@ export const chatHandlers: GatewayRequestHandlers = {
         p.thinking && trimmedMessage && !trimmedMessage.startsWith("/"),
       );
       const commandBody = injectThinking ? `/think ${p.thinking} ${parsedMessage}` : parsedMessage;
+      const messageForAgent = systemProvenanceReceipt
+        ? [systemProvenanceReceipt, parsedMessage].filter(Boolean).join("\n\n")
+        : parsedMessage;
       const clientInfo = client?.connect?.client;
-      const routeChannelCandidate = normalizeMessageChannel(
-        entry?.deliveryContext?.channel ?? entry?.lastChannel,
-      );
-      const routeToCandidate = entry?.deliveryContext?.to ?? entry?.lastTo;
-      const routeAccountIdCandidate =
-        entry?.deliveryContext?.accountId ?? entry?.lastAccountId ?? undefined;
-      const routeThreadIdCandidate = entry?.deliveryContext?.threadId ?? entry?.lastThreadId;
-      const parsedSessionKey = parseAgentSessionKey(sessionKey);
-      const sessionScopeParts = (parsedSessionKey?.rest ?? sessionKey).split(":").filter(Boolean);
-      const sessionScopeHead = sessionScopeParts[0];
-      const sessionChannelHint = normalizeMessageChannel(sessionScopeHead);
-      const sessionPeerShapeCandidates = [sessionScopeParts[1], sessionScopeParts[2]]
-        .map((part) => (part ?? "").trim().toLowerCase())
-        .filter(Boolean);
-      const isChannelAgnosticSessionScope = CHANNEL_AGNOSTIC_SESSION_SCOPES.has(
-        (sessionScopeHead ?? "").trim().toLowerCase(),
-      );
-      const isChannelScopedSession = sessionPeerShapeCandidates.some((part) =>
-        CHANNEL_SCOPED_SESSION_SHAPES.has(part),
-      );
-      const hasLegacyChannelPeerShape =
-        !isChannelScopedSession &&
-        typeof sessionScopeParts[1] === "string" &&
-        sessionChannelHint === routeChannelCandidate;
-      // Only inherit prior external route metadata for channel-scoped sessions.
-      // Channel-agnostic sessions (main, direct:<peer>, etc.) can otherwise
-      // leak stale routes across surfaces.
-      const canInheritDeliverableRoute = Boolean(
-        sessionChannelHint &&
-        sessionChannelHint !== INTERNAL_MESSAGE_CHANNEL &&
-        !isChannelAgnosticSessionScope &&
-        (isChannelScopedSession || hasLegacyChannelPeerShape),
-      );
-      const hasDeliverableRoute =
-        canInheritDeliverableRoute &&
-        routeChannelCandidate &&
-        routeChannelCandidate !== INTERNAL_MESSAGE_CHANNEL &&
-        typeof routeToCandidate === "string" &&
-        routeToCandidate.trim().length > 0;
-      const originatingChannel = hasDeliverableRoute
-        ? routeChannelCandidate
-        : INTERNAL_MESSAGE_CHANNEL;
-      const originatingTo = hasDeliverableRoute ? routeToCandidate : undefined;
-      const accountId = hasDeliverableRoute ? routeAccountIdCandidate : undefined;
-      const messageThreadId = hasDeliverableRoute ? routeThreadIdCandidate : undefined;
+      const {
+        originatingChannel,
+        originatingTo,
+        accountId,
+        messageThreadId,
+        explicitDeliverRoute,
+      } = resolveChatSendOriginatingRoute({
+        client: clientInfo,
+        deliver: p.deliver,
+        entry,
+        hasConnectedClient: client?.connect !== undefined,
+        mainKey: cfg.session?.mainKey,
+        sessionKey,
+      });
       // Inject timestamp so agents know the current date/time.
       // Only BodyForAgent gets the timestamp — Body stays raw for UI display.
       // See: https://github.com/moltbot/moltbot/issues/3658
-      const stampedMessage = injectTimestamp(parsedMessage, timestampOptsFromConfig(cfg));
+      const stampedMessage = injectTimestamp(messageForAgent, timestampOptsFromConfig(cfg));
 
       const ctx: MsgContext = {
-        Body: parsedMessage,
+        Body: messageForAgent,
         BodyForAgent: stampedMessage,
         BodyForCommands: commandBody,
         RawBody: parsedMessage,
         CommandBody: commandBody,
+        InputProvenance: systemInputProvenance,
         SessionKey: sessionKey,
         Provider: INTERNAL_MESSAGE_CHANNEL,
         Surface: INTERNAL_MESSAGE_CHANNEL,
         OriginatingChannel: originatingChannel,
         OriginatingTo: originatingTo,
+        ExplicitDeliverRoute: explicitDeliverRoute,
         AccountId: accountId,
         MessageThreadId: messageThreadId,
         ChatType: "direct",
@@ -928,10 +1211,6 @@ export const chatHandlers: GatewayRequestHandlers = {
         GatewayClientScopes: client?.connect?.scopes,
       };
 
-      const agentId = resolveSessionAgentId({
-        sessionKey,
-        config: cfg,
-      });
       const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
         cfg,
         agentId,

@@ -19,18 +19,6 @@ vi.mock("./store.js", async (importOriginal) => {
 const { startMediaServer } = await import("./server.js");
 const { MEDIA_MAX_BYTES } = await import("./store.js");
 
-async function waitForFileRemoval(filePath: string, maxTicks = 1000) {
-  for (let tick = 0; tick < maxTicks; tick += 1) {
-    try {
-      await fs.stat(filePath);
-    } catch {
-      return;
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`timed out waiting for ${filePath} removal`);
-}
-
 describe("media server", () => {
   let server: Awaited<ReturnType<typeof startMediaServer>>;
   let port = 0;
@@ -57,13 +45,13 @@ describe("media server", () => {
     MEDIA_DIR = "";
   });
 
-  it("serves media and cleans up after send", async () => {
+  it("serves media files without immediate cleanup", async () => {
     const file = await writeMediaFile("file1", "hello");
     const res = await fetch(mediaUrl("file1"));
     expect(res.status).toBe(200);
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await res.text()).toBe("hello");
-    await waitForFileRemoval(file);
+    await fs.access(file);
   });
 
   it("expires old media", async () => {

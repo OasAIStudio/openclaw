@@ -34,6 +34,28 @@ describe("shouldReloadHistoryForFinalEvent", () => {
     ).toBe(false);
   });
 
+  it("returns true when final event includes assistant NO_REPLY payload", () => {
+    expect(
+      shouldReloadHistoryForFinalEvent({
+        runId: "run-1",
+        sessionKey: "main",
+        state: "final",
+        message: { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true when final event includes assistant payload without extractable text", () => {
+    expect(
+      shouldReloadHistoryForFinalEvent({
+        runId: "run-1",
+        sessionKey: "main",
+        state: "final",
+        message: { role: "assistant", content: [] },
+      }),
+    ).toBe(true);
+  });
+
   it("returns true when final event message role is non-assistant", () => {
     expect(
       shouldReloadHistoryForFinalEvent({

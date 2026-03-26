@@ -1,9 +1,13 @@
+import { resetToolStream } from "../app-tool-stream.ts";
 import { extractText } from "../chat/message-extract.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { ChatAttachment } from "../ui-types.ts";
 import { generateUUID } from "../uuid.ts";
 
 const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
+const CHAT_HISTORY_LOAD_CHUNK = 80;
+
+let loadHistoryRequestId = 0;
 
 function isSilentReplyStream(text: string): boolean {
   return SILENT_REPLY_PATTERN.test(text);
@@ -24,6 +28,16 @@ function isAssistantSilentReply(message: unknown): boolean {
   }
   const text = extractText(message);
   return typeof text === "string" && isSilentReplyStream(text);
+}
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
 }
 
 export type ChatState = {
@@ -50,12 +64,26 @@ export type ChatEventPayload = {
   errorMessage?: string;
 };
 
+function maybeResetToolStream(state: ChatState) {
+  const toolHost = state as ChatState & Partial<Parameters<typeof resetToolStream>[0]>;
+  if (
+    toolHost.toolStreamById instanceof Map &&
+    Array.isArray(toolHost.toolStreamOrder) &&
+    Array.isArray(toolHost.chatToolMessages) &&
+    Array.isArray(toolHost.chatStreamSegments)
+  ) {
+    resetToolStream(toolHost as Parameters<typeof resetToolStream>[0]);
+  }
+}
+
 export async function loadChatHistory(state: ChatState) {
   if (!state.client || !state.connected) {
     return;
   }
+  const requestId = ++loadHistoryRequestId;
   state.chatLoading = true;
   state.lastError = null;
+  state.chatMessages = [];
   try {
     const res = await state.client.request<{ messages?: Array<unknown>; thinkingLevel?: string }>(
       "chat.history",
@@ -64,12 +92,40 @@ export async function loadChatHistory(state: ChatState) {
         limit: 200,
       },
     );
+    if (requestId !== loadHistoryRequestId) {
+      return;
+    }
+
     const messages = Array.isArray(res.messages) ? res.messages : [];
-    state.chatMessages = messages.filter((message) => !isAssistantSilentReply(message));
+    const loadedMessages: unknown[] = [];
+    for (const message of messages) {
+      if (!isAssistantSilentReply(message)) {
+        loadedMessages.push(message);
+        if (loadedMessages.length % CHAT_HISTORY_LOAD_CHUNK === 0) {
+          state.chatMessages = loadedMessages.slice();
+          await yieldToMainThread();
+        }
+      }
+      if (requestId !== loadHistoryRequestId) {
+        return;
+      }
+    }
+    state.chatMessages = loadedMessages.slice();
     state.chatThinkingLevel = res.thinkingLevel ?? null;
+    // Clear all streaming state — history includes tool results and text
+    // inline, so keeping streaming artifacts would cause duplicates.
+    maybeResetToolStream(state);
+    state.chatStream = null;
+    state.chatStreamStartedAt = null;
   } catch (err) {
+    if (requestId !== loadHistoryRequestId) {
+      return;
+    }
     state.lastError = String(err);
   } finally {
+    if (requestId !== loadHistoryRequestId) {
+      return;
+    }
     state.chatLoading = false;
   }
 }

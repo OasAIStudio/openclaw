@@ -13,6 +13,8 @@ import type { ThemeMode } from "./theme.ts";
 import type { SessionsListResult } from "./types.ts";
 
 type SessionDefaultsSnapshot = {
+  defaultAgentId?: string;
+  scope?: string;
   mainSessionKey?: string;
   mainKey?: string;
 };
@@ -291,10 +293,10 @@ export function renderChatControls(state: AppViewState) {
   `;
 }
 
-function resolveMainSessionKey(
+export function resolveMainSessionKey(
   hello: AppViewState["hello"],
   sessions: SessionsListResult | null,
-): string | null {
+): string {
   const snapshot = hello?.snapshot as { sessionDefaults?: SessionDefaultsSnapshot } | undefined;
   const mainSessionKey = snapshot?.sessionDefaults?.mainSessionKey?.trim();
   if (mainSessionKey) {
@@ -304,10 +306,13 @@ function resolveMainSessionKey(
   if (mainKey) {
     return mainKey;
   }
+  if (snapshot?.sessionDefaults?.scope === "global") {
+    return "global";
+  }
   if (sessions?.sessions?.some((row) => row.key === "main")) {
     return "main";
   }
-  return null;
+  return "main";
 }
 
 /* ── Channel display labels ────────────────────────────── */

@@ -59,18 +59,6 @@ export function attachMediaRoutes(
         res.type(mime);
       }
       res.send(data);
-      // best-effort single-use cleanup after response ends
-      res.on("finish", () => {
-        const cleanup = () => {
-          void fs.rm(realPath).catch(() => {});
-        };
-        // Tests should not pay for time-based cleanup delays.
-        if (process.env.VITEST || process.env.NODE_ENV === "test") {
-          queueMicrotask(cleanup);
-          return;
-        }
-        setTimeout(cleanup, 50);
-      });
     } catch (err) {
       if (err instanceof SafeOpenError) {
         if (err.code === "outside-workspace") {
@@ -96,7 +84,7 @@ export function attachMediaRoutes(
 
   // periodic cleanup
   setInterval(() => {
-    void cleanOldMedia(ttlMs);
+    void cleanOldMedia(ttlMs, { recursive: false });
   }, ttlMs).unref();
 }
 
