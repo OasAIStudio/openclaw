@@ -188,6 +188,7 @@ export async function runServiceStart(params: {
   service: GatewayService;
   renderStartHints: () => string[];
   opts?: DaemonLifecycleOptions;
+  onNotLoaded?: (ctx: NotLoadedActionContext) => Promise<NotLoadedActionResult | null>;
 }) {
   const json = Boolean(params.opts?.json);
   const { stdout, emit, fail } = createActionIO({ action: "start", json });
@@ -201,6 +202,34 @@ export async function runServiceStart(params: {
     return;
   }
   if (!loaded) {
+    let handledNotLoaded: NotLoadedActionResult | null = null;
+    try {
+      handledNotLoaded = (await params.onNotLoaded?.({ json, stdout, fail })) ?? null;
+    } catch (err) {
+      fail(`${params.serviceNoun} start failed: ${String(err)}`);
+      return;
+    }
+    if (handledNotLoaded) {
+      let started = false;
+      if (handledNotLoaded.result === "started" || handledNotLoaded.result === "restarted") {
+        try {
+          started = await params.service.isLoaded({ env: process.env });
+        } catch {
+          started = true;
+        }
+      }
+      emit({
+        ok: true,
+        result: handledNotLoaded.result,
+        message: handledNotLoaded.message,
+        warnings: handledNotLoaded.warnings,
+        service: buildDaemonServiceSnapshot(params.service, started),
+      });
+      if (!json && handledNotLoaded.message) {
+        defaultRuntime.log(handledNotLoaded.message);
+      }
+      return;
+    }
     await handleServiceNotLoaded({
       serviceNoun: params.serviceNoun,
       service: params.service,

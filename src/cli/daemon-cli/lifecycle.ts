@@ -191,11 +191,40 @@ export async function runDaemonUninstall(opts: DaemonLifecycleOptions = {}) {
 }
 
 export async function runDaemonStart(opts: DaemonLifecycleOptions = {}) {
+  const service = resolveGatewayService();
+
   return await runServiceStart({
     serviceNoun: "Gateway",
-    service: resolveGatewayService(),
+    service,
     renderStartHints: renderGatewayServiceStartHints,
     opts,
+    onNotLoaded: async (ctx) => {
+      const {
+        stdout = process.stdout,
+        fail = (message: string) => {
+          throw new Error(message);
+        },
+      } = ctx ?? {};
+      const command = await service.readCommand(process.env).catch(() => null);
+      if (!command) {
+        return null;
+      }
+      await service.restart({ env: process.env, stdout });
+      let started = false;
+      try {
+        started = await service.isLoaded({ env: process.env });
+      } catch {
+        started = true;
+      }
+      if (!started) {
+        fail("Gateway start recovery did not restore a loaded launch state.");
+        return null;
+      }
+      return {
+        result: "started",
+        message: "Gateway launch service restart was recovered from launch configuration.",
+      };
+    },
   });
 }
 
@@ -233,7 +262,31 @@ export async function runDaemonRestart(opts: DaemonLifecycleOptions = {}): Promi
     renderStartHints: renderGatewayServiceStartHints,
     opts,
     checkTokenDrift: true,
-    onNotLoaded: async () => {
+    onNotLoaded: async (ctx) => {
+      const {
+        stdout = process.stdout,
+        fail = (message: string) => {
+          throw new Error(message);
+        },
+      } = ctx ?? {};
+      const command = await service.readCommand(process.env).catch(() => null);
+      if (command) {
+        await service.restart({ env: process.env, stdout });
+        let restarted = false;
+        try {
+          restarted = await service.isLoaded({ env: process.env });
+        } catch {
+          restarted = true;
+        }
+        if (!restarted) {
+          fail("Gateway restart recovery did not restore a loaded launch state.");
+          return null;
+        }
+        return {
+          result: "restarted",
+          message: "Gateway restart recovery was restored from managed launch configuration.",
+        };
+      }
       const handled = await restartGatewayWithoutServiceManager(restartPort);
       if (handled) {
         restartedWithoutServiceManager = true;

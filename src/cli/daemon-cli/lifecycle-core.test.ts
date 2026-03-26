@@ -40,11 +40,12 @@ vi.mock("../../runtime.js", () => ({
 }));
 
 let runServiceRestart: typeof import("./lifecycle-core.js").runServiceRestart;
+let runServiceStart: typeof import("./lifecycle-core.js").runServiceStart;
 let runServiceStop: typeof import("./lifecycle-core.js").runServiceStop;
 
 describe("runServiceRestart token drift", () => {
   beforeAll(async () => {
-    ({ runServiceRestart, runServiceStop } = await import("./lifecycle-core.js"));
+    ({ runServiceRestart, runServiceStart, runServiceStop } = await import("./lifecycle-core.js"));
   });
 
   beforeEach(() => {
@@ -175,5 +176,55 @@ describe("runServiceRestart token drift", () => {
     const payload = JSON.parse(jsonLine ?? "{}") as { result?: string; message?: string };
     expect(payload.result).toBe("restarted");
     expect(payload.message).toContain("unmanaged process");
+  });
+});
+
+describe("runServiceStart not-loaded recovery", () => {
+  beforeEach(() => {
+    runtimeLogs.length = 0;
+    service.isLoaded.mockClear();
+    service.readCommand.mockClear();
+    service.restart.mockClear();
+    service.isLoaded.mockResolvedValue(true);
+    service.readCommand.mockResolvedValue({ environment: {} });
+    service.restart.mockResolvedValue(undefined);
+  });
+
+  it("uses the onNotLoaded handler when start is not loaded", async () => {
+    service.isLoaded.mockResolvedValueOnce(false);
+    service.isLoaded.mockResolvedValueOnce(true);
+
+    await runServiceStart({
+      serviceNoun: "Gateway",
+      service,
+      renderStartHints: () => [],
+      opts: { json: true },
+      onNotLoaded: async () => ({
+        result: "started",
+        message: "Gateway restart recovery complete.",
+      }),
+    });
+
+    const jsonLine = runtimeLogs.find((line) => line.trim().startsWith("{"));
+    const payload = JSON.parse(jsonLine ?? "{}") as { result?: string; message?: string };
+    expect(payload.result).toBe("started");
+    expect(payload.message).toBe("Gateway restart recovery complete.");
+  });
+
+  it("falls back to not-loaded hints when onNotLoaded is absent", async () => {
+    service.isLoaded.mockResolvedValue(false);
+
+    await runServiceStart({
+      serviceNoun: "Gateway",
+      service,
+      renderStartHints: () => ["openclaw gateway install"],
+      opts: { json: true },
+    });
+
+    const jsonLine = runtimeLogs.find((line) => line.trim().startsWith("{"));
+    const payload = JSON.parse(jsonLine ?? "{}") as { result?: string; message?: string };
+    expect(payload.result).toBe("not-loaded");
+    expect(payload.message).toContain("not loaded");
+    expect(payload.hints).toEqual(["openclaw gateway install"]);
   });
 });

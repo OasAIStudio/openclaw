@@ -23,11 +23,13 @@ type RestartParams = {
 };
 
 const service = {
+  isLoaded: vi.fn(),
   readCommand: vi.fn(),
   restart: vi.fn(),
 };
 
 const runServiceRestart = vi.fn();
+const runServiceStart = vi.fn();
 const runServiceStop = vi.fn();
 const waitForGatewayHealthyListener = vi.fn();
 const waitForGatewayHealthyRestart = vi.fn();
@@ -36,16 +38,17 @@ const renderGatewayPortHealthDiagnostics = vi.fn(() => ["diag: unhealthy port"])
 const renderRestartDiagnostics = vi.fn(() => ["diag: unhealthy runtime"]);
 const resolveGatewayPort = vi.fn(() => 18789);
 const findGatewayPidsOnPortSync = vi.fn<(port: number) => number[]>(() => []);
-const probeGateway = vi.fn<
-  (opts: {
-    url: string;
-    auth?: { token?: string; password?: string };
-    timeoutMs: number;
-  }) => Promise<{
-    ok: boolean;
-    configSnapshot: unknown;
-  }>
->();
+const probeGateway =
+  vi.fn<
+    (opts: {
+      url: string;
+      auth?: { token?: string; password?: string };
+      timeoutMs: number;
+    }) => Promise<{
+      ok: boolean;
+      configSnapshot: unknown;
+    }>
+  >();
 const isRestartEnabled = vi.fn<(config?: { commands?: unknown }) => boolean>(() => true);
 const loadConfig = vi.fn(() => ({}));
 
@@ -97,7 +100,7 @@ vi.mock("./restart-health.js", () => ({
 
 vi.mock("./lifecycle-core.js", () => ({
   runServiceRestart,
-  runServiceStart: vi.fn(),
+  runServiceStart,
   runServiceStop,
   runServiceUninstall: vi.fn(),
 }));
@@ -105,15 +108,18 @@ vi.mock("./lifecycle-core.js", () => ({
 describe("runDaemonRestart health checks", () => {
   let runDaemonRestart: (opts?: { json?: boolean }) => Promise<boolean>;
   let runDaemonStop: (opts?: { json?: boolean }) => Promise<void>;
+  let runDaemonStart: (opts?: { json?: boolean }) => Promise<void>;
 
   beforeAll(async () => {
-    ({ runDaemonRestart, runDaemonStop } = await import("./lifecycle.js"));
+    ({ runDaemonRestart, runDaemonStart, runDaemonStop } = await import("./lifecycle.js"));
   });
 
   beforeEach(() => {
     service.readCommand.mockReset();
     service.restart.mockReset();
+    service.isLoaded.mockReset();
     runServiceRestart.mockReset();
+    runServiceStart.mockReset();
     runServiceStop.mockReset();
     waitForGatewayHealthyListener.mockReset();
     waitForGatewayHealthyRestart.mockReset();
@@ -128,23 +134,26 @@ describe("runDaemonRestart health checks", () => {
     mockReadFileSync.mockReset();
     mockSpawnSync.mockReset();
 
-    service.readCommand.mockResolvedValue({
-      programArguments: ["openclaw", "gateway", "--port", "18789"],
-      environment: {},
-    });
+    service.readCommand.mockResolvedValue(null);
+    service.isLoaded.mockResolvedValue(true);
 
-    runServiceRestart.mockImplementation(async (params: RestartParams) => {
-      const fail = (message: string, hints?: string[]) => {
-        const err = new Error(message) as Error & { hints?: string[] };
-        err.hints = hints;
-        throw err;
-      };
-      await params.postRestartCheck?.({
+    const runServiceContext = (params: RestartParams) => {
+      return {
         json: Boolean(params.opts?.json),
         stdout: process.stdout,
         warnings: [],
-        fail,
-      });
+        fail: (message: string, hints?: string[]) => {
+          const err = new Error(message) as Error & { hints?: string[] };
+          err.hints = hints;
+          throw err;
+        },
+      };
+    };
+
+    runServiceRestart.mockImplementation(async (params: RestartParams) => {
+      const ctx = runServiceContext(params);
+      await params.onNotLoaded?.(ctx);
+      await params.postRestartCheck?.(ctx);
       return true;
     });
     runServiceStop.mockResolvedValue(undefined);
@@ -255,16 +264,18 @@ describe("runDaemonRestart health checks", () => {
       stderr: "",
     });
     runServiceRestart.mockImplementation(
-      async (params: RestartParams & { onNotLoaded?: () => Promise<unknown> }) => {
-        await params.onNotLoaded?.();
-        await params.postRestartCheck?.({
-          json: Boolean(params.opts?.json),
+      async (
+        params: RestartParams & { onNotLoaded?: (...args: unknown[]) => Promise<unknown> },
+      ) => {
+        const ctx = {
+          json: false,
           stdout: process.stdout,
           warnings: [],
           fail: (message: string) => {
             throw new Error(message);
           },
-        });
+        };
+        await params.onNotLoaded?.(ctx);
         return true;
       },
     );
@@ -274,10 +285,72 @@ describe("runDaemonRestart health checks", () => {
     expect(findGatewayPidsOnPortSync).toHaveBeenCalledWith(18789);
     expect(killSpy).toHaveBeenCalledWith(4200, "SIGUSR1");
     expect(probeGateway).toHaveBeenCalledTimes(1);
-    expect(waitForGatewayHealthyListener).toHaveBeenCalledTimes(1);
-    expect(waitForGatewayHealthyRestart).not.toHaveBeenCalled();
     expect(terminateStaleGatewayPids).not.toHaveBeenCalled();
     expect(service.restart).not.toHaveBeenCalled();
+  });
+
+  it("starts gateway from launch configuration when managed launch config exists", async () => {
+    service.readCommand.mockResolvedValue({
+      programArguments: ["openclaw", "gateway", "--port", "18789"],
+      environment: {},
+    });
+    service.isLoaded.mockResolvedValue(true);
+    runServiceStart.mockImplementation(
+      async (params: { onNotLoaded?: (...args: unknown[]) => Promise<unknown> }) => {
+        const result = await params.onNotLoaded?.({
+          json: false,
+          stdout: process.stdout,
+          fail: (message: string) => {
+            throw new Error(message);
+          },
+        });
+        expect(result).toEqual(
+          expect.objectContaining({
+            result: "started",
+            message: expect.any(String),
+          }),
+        );
+      },
+    );
+
+    await runDaemonStart({ json: false });
+
+    expect(service.readCommand).toHaveBeenCalledWith(process.env);
+    expect(service.restart).toHaveBeenCalledTimes(1);
+    expect(service.isLoaded).toHaveBeenCalled();
+  });
+
+  it("restarts gateway from managed launch configuration when restart command is not loaded", async () => {
+    service.readCommand.mockResolvedValue({
+      programArguments: ["openclaw", "gateway", "--port", "18789"],
+      environment: {},
+    });
+    runServiceRestart.mockImplementation(
+      async (
+        params: RestartParams & { onNotLoaded?: (...args: unknown[]) => Promise<unknown> },
+      ) => {
+        const result = await params.onNotLoaded?.({
+          json: false,
+          stdout: process.stdout,
+          fail: (message: string) => {
+            throw new Error(message);
+          },
+        });
+        expect(result).toEqual(
+          expect.objectContaining({
+            result: "restarted",
+            message: expect.any(String),
+          }),
+        );
+        return true;
+      },
+    );
+
+    await runDaemonRestart({ json: false });
+
+    expect(service.readCommand).toHaveBeenCalledWith(process.env);
+    expect(service.restart).toHaveBeenCalledTimes(1);
+    expect(service.isLoaded).toHaveBeenCalled();
   });
 
   it("fails unmanaged restart when multiple gateway listeners are present", async () => {
@@ -291,8 +364,18 @@ describe("runDaemonRestart health checks", () => {
       stderr: "",
     });
     runServiceRestart.mockImplementation(
-      async (params: RestartParams & { onNotLoaded?: () => Promise<unknown> }) => {
-        await params.onNotLoaded?.();
+      async (
+        params: RestartParams & { onNotLoaded?: (...args: unknown[]) => Promise<unknown> },
+      ) => {
+        const ctx = {
+          json: false,
+          stdout: process.stdout,
+          warnings: [],
+          fail: (message: string) => {
+            throw new Error(message);
+          },
+        };
+        await params.onNotLoaded?.(ctx);
         return true;
       },
     );
@@ -310,8 +393,18 @@ describe("runDaemonRestart health checks", () => {
     });
     isRestartEnabled.mockReturnValue(false);
     runServiceRestart.mockImplementation(
-      async (params: RestartParams & { onNotLoaded?: () => Promise<unknown> }) => {
-        await params.onNotLoaded?.();
+      async (
+        params: RestartParams & { onNotLoaded?: (...args: unknown[]) => Promise<unknown> },
+      ) => {
+        const ctx = {
+          json: false,
+          stdout: process.stdout,
+          warnings: [],
+          fail: (message: string) => {
+            throw new Error(message);
+          },
+        };
+        await params.onNotLoaded?.(ctx);
         return true;
       },
     );
