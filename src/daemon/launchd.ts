@@ -614,6 +614,24 @@ export async function restartLaunchAgent({
     runtime.code === 0
       ? parseLaunchctlPrint(runtime.stdout || runtime.stderr || "").pid
       : undefined;
+  const ensureLaunchAgentListedOrRecovered = async (): Promise<LaunchAgentRecoveryResult> => {
+    const listed = await ensureLaunchAgentListedAfterBootstrap({ domain, label });
+    if (listed.ok) {
+      return listed;
+    }
+    const recovery = await recoverLaunchAgentRegistration({
+      domain,
+      label,
+      plistPath,
+    });
+    if (!recovery.ok) {
+      return recovery;
+    }
+    return ensureLaunchAgentListedAfterBootstrap({
+      domain,
+      label,
+    });
+  };
 
   const directStart = await execLaunchctl(["kickstart", "-k", serviceId]);
   if (directStart.code === 0) {
@@ -655,7 +673,10 @@ export async function restartLaunchAgent({
         ].join("\n"),
       );
     }
-    throw new Error(`launchctl bootstrap failed: ${detail}`);
+    const recovery = await ensureLaunchAgentListedOrRecovered();
+    if (!recovery.ok) {
+      throw new Error(`launchctl bootstrap failed: ${detail}`);
+    }
   }
 
   const start = await execLaunchctl(["kickstart", "-k", serviceId]);
@@ -694,27 +715,23 @@ export async function restartLaunchAgent({
       );
     }
 
-    const launchAgentState = await ensureLaunchAgentLoadedAfterKickstartRecovery({
-      env: serviceEnv,
+    const launchAgentState = await ensureLaunchAgentListedAfterBootstrap({
       domain,
       label,
-      plistPath,
     });
     if (!launchAgentState.ok) {
-      throw new Error(
-        `launchctl kickstart failed: ${detail} Recovery reapplication failed: ${
-          launchAgentState.detail ?? "unknown error"
-        }`,
-      );
-    }
-    try {
-      stdout.write(`${formatLine("Restarted LaunchAgent", serviceId)}\n`);
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException)?.code !== "EPIPE") {
-        throw err;
+      const recovery = await ensureLaunchAgentListedOrRecovered();
+      if (!recovery.ok) {
+        throw new Error(
+          `launchctl kickstart failed: ${detail} Recovery reapplication failed: ${
+            recovery.detail ?? "unknown error"
+          }`,
+        );
       }
     }
-    return;
+    throw new Error(
+      `launchctl kickstart failed: ${detail} Recovery reapplication failed: LaunchAgent is registered but not loadable.`,
+    );
   }
   try {
     stdout.write(`${formatLine("Restarted LaunchAgent", serviceId)}\n`);
