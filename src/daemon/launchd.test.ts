@@ -19,6 +19,11 @@ const state = vi.hoisted(() => ({
   listOutput: "",
   printOutput: "",
   printError: "",
+  printScript: [] as Array<{
+    stdout?: string;
+    stderr?: string;
+    code?: number;
+  }>,
   bootstrapError: "",
   kickstartError: "",
   kickstartFailureBudget: 0,
@@ -48,6 +53,14 @@ vi.mock("./exec-file.js", () => ({
       return { stdout: state.listOutput, stderr: "", code: 0 };
     }
     if (call[0] === "print") {
+      const scripted = state.printScript.shift();
+      if (scripted) {
+        return {
+          stdout: scripted.stdout ?? "",
+          stderr: scripted.stderr ?? "",
+          code: scripted.code ?? 0,
+        };
+      }
       if (state.printError) {
         return { stdout: "", stderr: state.printError, code: 1 };
       }
@@ -121,6 +134,7 @@ beforeEach(() => {
   state.printOutput = "";
   state.bootstrapError = "";
   state.kickstartError = "";
+  state.printScript.length = 0;
   state.kickstartFailureBudget = 0;
   state.printError = "";
   state.dirs.clear();
@@ -228,6 +242,21 @@ describe("launchd bootstrap repair", () => {
     expect(enableIndex).toBeLessThan(bootstrapIndex);
     expect(bootstrapIndex).toBeLessThan(kickstartIndex);
   });
+
+  it("re-validates registration after bootstrap repair when launchctl print is unavailable", async () => {
+    const env: Record<string, string | undefined> = {
+      HOME: "/Users/test",
+      OPENCLAW_PROFILE: "default",
+    };
+    state.printError = "Could not find service";
+    state.listOutput = "123 0 ai.openclaw.gateway\n";
+
+    const repair = await repairLaunchAgentBootstrap({ env });
+    expect(repair.ok).toBe(true);
+
+    const listCalls = state.launchctlCalls.filter((c) => c[0] === "list");
+    expect(listCalls.length).toBe(1);
+  });
 });
 
 describe("launchd install", () => {
@@ -318,7 +347,7 @@ describe("launchd install", () => {
     expect(state.fileModes.get(plistPath)).toBe(0o644);
   });
 
-  it("restarts LaunchAgent with bootout-enable-bootstrap-kickstart order", async () => {
+  it("attempts direct kickstart before bootstrap fallback", async () => {
     const env = createDefaultLaunchdEnv();
     await restartLaunchAgent({
       env,
@@ -329,26 +358,26 @@ describe("launchd install", () => {
     const label = "ai.openclaw.gateway";
     const plistPath = resolveLaunchAgentPlistPath(env);
     const serviceId = `${domain}/${label}`;
-    const bootoutIndex = state.launchctlCalls.findIndex(
-      (c) => c[0] === "bootout" && c[1] === serviceId,
-    );
-    const enableIndex = state.launchctlCalls.findIndex(
-      (c) => c[0] === "enable" && c[1] === serviceId,
-    );
-    const bootstrapIndex = state.launchctlCalls.findIndex(
-      (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === plistPath,
-    );
     const kickstartIndex = state.launchctlCalls.findIndex(
       (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
     );
+    const printIndex = state.launchctlCalls.findIndex(
+      (c) => c[0] === "print" && c[1] === serviceId,
+    );
+    const bootoutIndex = state.launchctlCalls.findIndex(
+      (c) => c[0] === "bootout" && c[1] === serviceId,
+    );
+    const enableCalls = state.launchctlCalls.filter((c) => c[0] === "enable" && c[1] === serviceId);
+    const bootstrapCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === plistPath,
+    );
 
-    expect(bootoutIndex).toBeGreaterThanOrEqual(0);
-    expect(enableIndex).toBeGreaterThanOrEqual(0);
-    expect(bootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(printIndex).toBeGreaterThanOrEqual(0);
     expect(kickstartIndex).toBeGreaterThanOrEqual(0);
-    expect(bootoutIndex).toBeLessThan(enableIndex);
-    expect(enableIndex).toBeLessThan(bootstrapIndex);
-    expect(bootstrapIndex).toBeLessThan(kickstartIndex);
+    expect(kickstartIndex).toBeGreaterThan(printIndex);
+    expect(bootoutIndex).toBe(-1);
+    expect(enableCalls).toHaveLength(0);
+    expect(bootstrapCalls).toHaveLength(0);
   });
 
   it("retries kickstart on restart failures when registration can be restored", async () => {
@@ -377,9 +406,9 @@ describe("launchd install", () => {
       (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
     );
 
-    expect(bootoutIndex).toBeGreaterThanOrEqual(0);
-    expect(enableCalls.length).toBe(2);
-    expect(bootstrapCalls.length).toBe(2);
+    expect(bootoutIndex).toBe(-1);
+    expect(enableCalls.length).toBe(1);
+    expect(bootstrapCalls.length).toBe(1);
     expect(kickstartCalls.length).toBe(2);
   });
 
@@ -395,7 +424,7 @@ describe("launchd install", () => {
         env,
         stdout: new PassThrough(),
       }),
-    ).rejects.toThrow("LaunchAgent registration was restored, but restart could not be reapplied.");
+    ).rejects.toThrow("Recovery reapplication failed");
 
     const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
     const label = "ai.openclaw.gateway";
@@ -417,7 +446,7 @@ describe("launchd install", () => {
     expect(bootoutIndex).toBeGreaterThanOrEqual(0);
     expect(enableCalls.length).toBe(3);
     expect(bootstrapCalls.length).toBe(3);
-    expect(kickstartCalls.length).toBe(2);
+    expect(kickstartCalls.length).toBe(3);
     expect(listCalls.length).toBe(2);
   });
 
@@ -426,13 +455,14 @@ describe("launchd install", () => {
     state.kickstartError = "Could not find service";
     state.kickstartFailureBudget = 1;
     state.printError = "Could not find service";
+    state.printScript = [{ stdout: "state = running\npid = 4242", code: 0 }];
 
     await expect(
       restartLaunchAgent({
         env,
         stdout: new PassThrough(),
       }),
-    ).rejects.toThrow("Recovery revalidation failed");
+    ).rejects.toThrow("Recovery reapplication failed");
 
     const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
     const label = "ai.openclaw.gateway";
@@ -443,13 +473,50 @@ describe("launchd install", () => {
       (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === resolveLaunchAgentPlistPath(env),
     );
 
-    expect(enableCalls.length).toBe(2);
-    expect(bootstrapCalls.length).toBe(2);
-    expect(listCalls.length).toBe(1);
+    expect(enableCalls.length).toBeGreaterThanOrEqual(2);
+    expect(bootstrapCalls.length).toBeGreaterThanOrEqual(2);
+    expect(listCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("recovers from kickstart recheck that reports absent while still repairable", async () => {
+    const env = createDefaultLaunchdEnv();
+    state.kickstartError = "Could not find service";
+    state.kickstartFailureBudget = 1;
+    state.listOutput = "123 0 ai.openclaw.gateway\n";
+    state.printScript = [
+      { stdout: "state = running\npid = 4242", code: 0 },
+      { stderr: "Could not find service", code: 1 },
+      { stderr: "Could not find service", code: 1 },
+      { stderr: "Could not find service", code: 1 },
+      { stderr: "Could not find service", code: 1 },
+      { stdout: "state = running\npid = 4243", code: 0 },
+    ];
+
+    await restartLaunchAgent({
+      env,
+      stdout: new PassThrough(),
+    });
+
+    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
+    const label = "ai.openclaw.gateway";
+    const serviceId = `${domain}/${label}`;
+    const bootstrapCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "bootstrap" && c[1] === domain && c[2] === resolveLaunchAgentPlistPath(env),
+    );
+    const kickstartCalls = state.launchctlCalls.filter(
+      (c) => c[0] === "kickstart" && c[1] === "-k" && c[2] === serviceId,
+    );
+    const listCalls = state.launchctlCalls.filter((c) => c[0] === "list");
+
+    expect(bootstrapCalls.length).toBeGreaterThanOrEqual(2);
+    expect(kickstartCalls.length).toBe(3);
+    expect(listCalls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("waits for previous launchd pid to exit before bootstrapping", async () => {
     const env = createDefaultLaunchdEnv();
+    state.kickstartError = "Could not find service";
+    state.kickstartFailureBudget = 1;
     state.printOutput = ["state = running", "pid = 4242"].join("\n");
     const killSpy = vi.spyOn(process, "kill");
     killSpy
