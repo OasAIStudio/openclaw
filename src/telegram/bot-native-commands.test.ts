@@ -16,6 +16,9 @@ const pluginCommandMocks = vi.hoisted(() => ({
   matchPluginCommand: vi.fn(() => null),
   executePluginCommand: vi.fn(async () => ({ text: "ok" })),
 }));
+const replyDispatcherMocks = vi.hoisted(() => ({
+  dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => ({ queuedFinal: false, counts: {} })),
+}));
 const deliveryMocks = vi.hoisted(() => ({
   deliverReplies: vi.fn(async () => ({ delivered: true })),
 }));
@@ -31,6 +34,10 @@ vi.mock("../plugins/commands.js", () => ({
   getPluginCommandSpecs: pluginCommandMocks.getPluginCommandSpecs,
   matchPluginCommand: pluginCommandMocks.matchPluginCommand,
   executePluginCommand: pluginCommandMocks.executePluginCommand,
+}));
+vi.mock("../auto-reply/reply/provider-dispatcher.js", () => ({
+  dispatchReplyWithBufferedBlockDispatcher:
+    replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher,
 }));
 vi.mock("./bot/delivery.js", () => ({
   deliverReplies: deliveryMocks.deliverReplies,
@@ -62,6 +69,11 @@ describe("registerTelegramNativeCommands", () => {
     pluginCommandMocks.executePluginCommand.mockResolvedValue({ text: "ok" });
     deliveryMocks.deliverReplies.mockClear();
     deliveryMocks.deliverReplies.mockResolvedValue({ delivered: true });
+    replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher.mockClear();
+    replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher.mockResolvedValue({
+      queuedFinal: false,
+      counts: {},
+    });
   });
 
   const buildParams = (cfg: OpenClawConfig, accountId = "default") =>
@@ -269,5 +281,123 @@ describe("registerTelegramNativeCommands", () => {
       }),
     );
     expect(sendMessage).not.toHaveBeenCalledWith(123, "Command not found.");
+  });
+
+  it("keeps native slash command arguments when ctx.match is empty", async () => {
+    const commandHandlers = new Map<string, (ctx: unknown) => Promise<void>>();
+    const cfg: OpenClawConfig = {
+      agents: {
+        list: [{ id: "main", default: true }],
+      },
+    };
+    listSkillCommandsForAgents.mockReturnValue([
+      {
+        name: "dispatch",
+        skillName: "dispatch-skill",
+        description: "Skill command dispatch",
+        dispatch: {
+          kind: "tool",
+          toolName: "sessions_send",
+        },
+      } as never,
+    ]);
+
+    registerTelegramNativeCommands({
+      ...buildParams(cfg),
+      bot: {
+        api: {
+          setMyCommands: vi.fn().mockResolvedValue(undefined),
+          sendMessage: vi.fn().mockResolvedValue(undefined),
+        },
+        command: vi.fn((name: string, cb: (ctx: unknown) => Promise<void>) => {
+          commandHandlers.set(name, cb);
+        }),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    const handler = commandHandlers.get("dispatch");
+    expect(handler).toBeTruthy();
+
+    await handler?.({
+      match: "dispatch",
+      message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: "private" },
+        from: { id: 456, username: "alice" },
+        text: "/dispatch 115",
+      },
+    });
+
+    expect(replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          CommandBody: "/dispatch 115",
+          CommandArgs: expect.objectContaining({
+            raw: "115",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("keeps native slash command arguments when ctx.match includes args", async () => {
+    const commandHandlers = new Map<string, (ctx: unknown) => Promise<void>>();
+    const cfg: OpenClawConfig = {
+      agents: {
+        list: [{ id: "main", default: true }],
+      },
+    };
+    listSkillCommandsForAgents.mockReturnValue([
+      {
+        name: "dispatch",
+        skillName: "dispatch-skill",
+        description: "Skill command dispatch",
+        dispatch: {
+          kind: "tool",
+          toolName: "sessions_send",
+        },
+      } as never,
+    ]);
+
+    registerTelegramNativeCommands({
+      ...buildParams(cfg),
+      bot: {
+        api: {
+          setMyCommands: vi.fn().mockResolvedValue(undefined),
+          sendMessage: vi.fn().mockResolvedValue(undefined),
+        },
+        command: vi.fn((name: string, cb: (ctx: unknown) => Promise<void>) => {
+          commandHandlers.set(name, cb);
+        }),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    const handler = commandHandlers.get("dispatch");
+    expect(handler).toBeTruthy();
+
+    await handler?.({
+      match: "/dispatch 115",
+      message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: "private" },
+        from: { id: 456, username: "alice" },
+        text: "/dispatch 115",
+      },
+    });
+
+    expect(replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          CommandBody: "/dispatch 115",
+          CommandArgs: expect.objectContaining({
+            raw: "115",
+          }),
+        }),
+      }),
+    );
   });
 });

@@ -76,6 +76,57 @@ const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 
 type TelegramNativeCommandContext = Context & { match?: string };
 
+type TelegramCommandArgsResolver = {
+  match?: unknown;
+  messageText?: unknown;
+  commandName: string;
+};
+
+function parseTelegramNativeCommandArgs(input: string, commandName: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const lowerName = commandName.trim().toLowerCase();
+  const slashMatch = trimmed.match(/^\/([^\s@]+)(?:@[^\s]+)?(?:[:\s]+([\s\S]*))?$/);
+  if (slashMatch) {
+    const invoked = slashMatch[1]?.trim().toLowerCase();
+    if (!invoked || invoked !== lowerName) {
+      return null;
+    }
+    return slashMatch[2]?.trim() ?? "";
+  }
+
+  const commandMatch = trimmed.match(/^([^\s@]+)(?:\s+([\s\S]+))?$/);
+  if (!commandMatch) {
+    return null;
+  }
+  const invoked = commandMatch[1]?.trim().toLowerCase();
+  if (!invoked || invoked !== lowerName) {
+    return null;
+  }
+  return commandMatch[2]?.trim() ?? "";
+}
+
+function resolveTelegramNativeCommandArgs(params: TelegramCommandArgsResolver): string {
+  const parsedFromMatch = typeof params.match === "string" ? parseTelegramNativeCommandArgs(params.match, params.commandName) : null;
+  const parsedFromMessage =
+    typeof params.messageText === "string"
+      ? parseTelegramNativeCommandArgs(params.messageText, params.commandName)
+      : null;
+
+  if (parsedFromMessage !== null && parsedFromMessage.length > 0) {
+    return parsedFromMessage;
+  }
+  if (parsedFromMatch !== null) {
+    return parsedFromMatch;
+  }
+  if (parsedFromMessage !== null) {
+    return parsedFromMessage;
+  }
+  return "";
+}
+
 type TelegramCommandAuthResult = {
   chatId: number;
   isGroup: boolean;
@@ -599,7 +650,11 @@ export const registerTelegramNativeCommands = ({
           const threadParams = buildTelegramThreadParams(threadSpec) ?? {};
 
           const commandDefinition = findCommandByNativeName(command.name, "telegram");
-          const rawText = ctx.match?.trim() ?? "";
+          const rawText = resolveTelegramNativeCommandArgs({
+            match: ctx.match,
+            messageText: msg.text,
+            commandName: command.name,
+          });
           const commandArgs = commandDefinition
             ? parseCommandArgs(commandDefinition, rawText)
             : rawText
@@ -804,7 +859,11 @@ export const registerTelegramNativeCommands = ({
             return;
           }
           const chatId = msg.chat.id;
-          const rawText = ctx.match?.trim() ?? "";
+          const rawText = resolveTelegramNativeCommandArgs({
+            match: ctx.match,
+            messageText: msg.text,
+            commandName: pluginCommand.command,
+          });
           const commandBody = `/${pluginCommand.command}${rawText ? ` ${rawText}` : ""}`;
           const match = matchPluginCommand(commandBody);
           if (!match) {
