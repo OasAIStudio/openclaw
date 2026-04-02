@@ -108,11 +108,84 @@ function parseTelegramNativeCommandArgs(input: string, commandName: string): str
   return commandMatch[2]?.trim() ?? "";
 }
 
+function parseTelegramNativeCommandArgsFromMatch(
+  matchValue: unknown,
+  commandName: string,
+): string | null {
+  if (typeof matchValue === "string") {
+    return parseTelegramNativeCommandArgs(matchValue, commandName);
+  }
+  if (Array.isArray(matchValue)) {
+    const entries = matchValue
+      .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+      .filter((entry) => entry !== "");
+    if (entries.length === 0) {
+      return null;
+    }
+    let hasEmptyResult = false;
+    for (const entry of entries) {
+      const parsed = parseTelegramNativeCommandArgs(entry, commandName);
+      if (parsed !== null) {
+        if (parsed.length > 0) {
+          return parsed;
+        }
+        hasEmptyResult = true;
+      }
+    }
+    const first = entries[0];
+    if (first?.startsWith("/")) {
+      const rebuilt = `${first} ${entries.slice(1).join(" ")}`.trim();
+      const parsed = parseTelegramNativeCommandArgs(rebuilt, commandName);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+    if (hasEmptyResult) {
+      return "";
+    }
+    return null;
+  }
+  if (!matchValue || typeof matchValue !== "object") {
+    return null;
+  }
+  const record = matchValue as Record<string, unknown>;
+  const candidates = [
+    record.match,
+    record.input,
+    record.text,
+    ...Object.keys(record)
+      .filter((key) => /^\d+$/.test(key))
+      .toSorted((left, right) => Number(left) - Number(right))
+      .map((key) => record[key]),
+  ].filter((entry): entry is string => typeof entry === "string");
+  let hasEmptyResult = false;
+  for (const candidate of candidates) {
+    const parsed = parseTelegramNativeCommandArgs(candidate, commandName);
+    if (parsed !== null) {
+      if (parsed.length > 0) {
+        return parsed;
+      }
+      hasEmptyResult = true;
+    }
+  }
+  const normalized = candidates.map((entry) => entry.trim()).filter((entry) => entry !== "");
+  if (normalized.length > 0 && normalized[0].startsWith("/")) {
+    const parsed = parseTelegramNativeCommandArgs(
+      `${normalized[0]} ${normalized.slice(1).join(" ")}`.trim(),
+      commandName,
+    );
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  if (hasEmptyResult) {
+    return "";
+  }
+  return null;
+}
+
 function resolveTelegramNativeCommandArgs(params: TelegramCommandArgsResolver): string {
-  const parsedFromMatch =
-    typeof params.match === "string"
-      ? parseTelegramNativeCommandArgs(params.match, params.commandName)
-      : null;
+  const parsedFromMatch = parseTelegramNativeCommandArgsFromMatch(params.match, params.commandName);
   const parsedFromMessage =
     typeof params.messageText === "string"
       ? parseTelegramNativeCommandArgs(params.messageText, params.commandName)
