@@ -48,7 +48,7 @@ function resolveSlashCommandName(commandBodyNormalized: string): string | null {
   if (!trimmed.startsWith("/")) {
     return null;
   }
-  const match = trimmed.match(/^\/([^\s:]+)(?::|\s|$)/);
+  const match = trimmed.match(/^\/([^\s:@]+)(?:@[^\s:]+)?(?::|\s|$)/);
   const name = match?.[1]?.trim().toLowerCase() ?? "";
   return name ? name : null;
 }

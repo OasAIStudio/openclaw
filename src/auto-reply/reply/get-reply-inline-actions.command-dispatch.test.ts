@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig } from "../../config/config.js";
 import type { SkillCommandSpec } from "../../agents/skills.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import type { TemplateContext } from "../templating.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { buildTestCtx } from "./test-ctx.js";
@@ -129,6 +129,116 @@ describe("handleInlineActions", () => {
         typing,
         cleanedBody: "/dispatch 115",
         command: { commandBodyNormalized: "/dispatch 115" },
+        overrides: {
+          skillCommands,
+        },
+      }),
+    );
+
+    expect(result).toEqual({ kind: "reply", reply: { text: "dispatched" } });
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock).toHaveBeenCalledWith(
+      expect.stringContaining("cmd_"),
+      expect.objectContaining({
+        command: "115",
+        commandName: "dispatch",
+        skillName: "dispatch-skill",
+      }),
+    );
+  });
+
+  it("passes bot-suffixed slash command arguments through tool dispatch", async () => {
+    const typing = createTypingController();
+    const executeMock = vi.fn(async () => ({ content: "dispatched" }));
+    toolingMocks.createOpenClawTools.mockReturnValue([
+      {
+        name: "sessions_send",
+        execute: executeMock,
+      } as never,
+    ]);
+
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      From: "telegram:999",
+      To: "telegram:999",
+      MessageThreadId: "t-1",
+      OriginatingTo: "telegram:999",
+    });
+
+    const skillCommands: SkillCommandSpec[] = [
+      {
+        name: "dispatch",
+        skillName: "dispatch-skill",
+        description: "Command dispatch",
+        dispatch: {
+          kind: "tool",
+          toolName: "sessions_send",
+        },
+      },
+    ];
+
+    const result = await handleInlineActions(
+      createHandleInlineActionsInput({
+        ctx,
+        typing,
+        cleanedBody: "/dispatch@bot 115",
+        command: { commandBodyNormalized: "/dispatch@bot 115" },
+        overrides: {
+          skillCommands,
+        },
+      }),
+    );
+
+    expect(result).toEqual({ kind: "reply", reply: { text: "dispatched" } });
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock).toHaveBeenCalledWith(
+      expect.stringContaining("cmd_"),
+      expect.objectContaining({
+        command: "115",
+        commandName: "dispatch",
+        skillName: "dispatch-skill",
+      }),
+    );
+  });
+
+  it("passes bot-suffixed colon slash command arguments through tool dispatch", async () => {
+    const typing = createTypingController();
+    const executeMock = vi.fn(async () => ({ content: "dispatched" }));
+    toolingMocks.createOpenClawTools.mockReturnValue([
+      {
+        name: "sessions_send",
+        execute: executeMock,
+      } as never,
+    ]);
+
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      From: "telegram:999",
+      To: "telegram:999",
+      MessageThreadId: "t-1",
+      OriginatingTo: "telegram:999",
+    });
+
+    const skillCommands: SkillCommandSpec[] = [
+      {
+        name: "dispatch",
+        skillName: "dispatch-skill",
+        description: "Command dispatch",
+        dispatch: {
+          kind: "tool",
+          toolName: "sessions_send",
+        },
+      },
+    ];
+
+    const result = await handleInlineActions(
+      createHandleInlineActionsInput({
+        ctx,
+        typing,
+        cleanedBody: "/dispatch@bot:115",
+        command: { commandBodyNormalized: "/dispatch@bot:115" },
         overrides: {
           skillCommands,
         },

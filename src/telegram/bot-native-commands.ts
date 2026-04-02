@@ -88,7 +88,7 @@ function parseTelegramNativeCommandArgs(input: string, commandName: string): str
     return "";
   }
   const lowerName = commandName.trim().toLowerCase();
-  const slashMatch = trimmed.match(/^\/([^\s@]+)(?:@[^\s]+)?(?:[:\s]+([\s\S]*))?$/);
+  const slashMatch = trimmed.match(/^\/([^\s@]+)(?:@[^\s:]+)?(?:[:\s]+([\s\S]*))?$/);
   if (slashMatch) {
     const invoked = slashMatch[1]?.trim().toLowerCase();
     if (!invoked || invoked !== lowerName) {
@@ -109,7 +109,10 @@ function parseTelegramNativeCommandArgs(input: string, commandName: string): str
 }
 
 function resolveTelegramNativeCommandArgs(params: TelegramCommandArgsResolver): string {
-  const parsedFromMatch = typeof params.match === "string" ? parseTelegramNativeCommandArgs(params.match, params.commandName) : null;
+  const parsedFromMatch =
+    typeof params.match === "string"
+      ? parseTelegramNativeCommandArgs(params.match, params.commandName)
+      : null;
   const parsedFromMessage =
     typeof params.messageText === "string"
       ? parseTelegramNativeCommandArgs(params.messageText, params.commandName)

@@ -400,4 +400,63 @@ describe("registerTelegramNativeCommands", () => {
       }),
     );
   });
+
+  it("keeps native slash command arguments for bot-suffixed colon syntax", async () => {
+    const commandHandlers = new Map<string, (ctx: unknown) => Promise<void>>();
+    const cfg: OpenClawConfig = {
+      agents: {
+        list: [{ id: "main", default: true }],
+      },
+    };
+    listSkillCommandsForAgents.mockReturnValue([
+      {
+        name: "dispatch",
+        skillName: "dispatch-skill",
+        description: "Skill command dispatch",
+        dispatch: {
+          kind: "tool",
+          toolName: "sessions_send",
+        },
+      } as never,
+    ]);
+
+    registerTelegramNativeCommands({
+      ...buildParams(cfg),
+      bot: {
+        api: {
+          setMyCommands: vi.fn().mockResolvedValue(undefined),
+          sendMessage: vi.fn().mockResolvedValue(undefined),
+        },
+        command: vi.fn((name: string, cb: (ctx: unknown) => Promise<void>) => {
+          commandHandlers.set(name, cb);
+        }),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    const handler = commandHandlers.get("dispatch");
+    expect(handler).toBeTruthy();
+
+    await handler?.({
+      match: "dispatch",
+      message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: "private" },
+        from: { id: 456, username: "alice" },
+        text: "/dispatch@mybot:115",
+      },
+    });
+
+    expect(replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({
+          CommandBody: "/dispatch 115",
+          CommandArgs: expect.objectContaining({
+            raw: "115",
+          }),
+        }),
+      }),
+    );
+  });
 });

@@ -10,6 +10,25 @@ import { logVerbose } from "../globals.js";
 import { getRemoteSkillEligibility } from "../infra/skills-remote.js";
 import { listChatCommands } from "./commands-registry.js";
 
+function parseSlashCommandNameAndArgs(raw: string): { commandName: string; args?: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+
+  const match = trimmed.match(/^\/([^\s:@]+)(?:@[^\s:]+)?(?:(?:\s+|:)([\s\S]+))?$/);
+  if (!match) {
+    return null;
+  }
+
+  const commandName = match[1]?.trim().toLowerCase();
+  if (!commandName) {
+    return null;
+  }
+  const rawArgs = match[2]?.trim();
+  return { commandName, args: rawArgs || undefined };
+}
+
 export function listReservedChatSlashCommandNames(extraNames: string[] = []): Set<string> {
   const reserved = new Set<string>();
   for (const command of listChatCommands()) {
@@ -167,20 +186,13 @@ export function resolveSkillCommandInvocation(params: {
   commandBodyNormalized: string;
   skillCommands: SkillCommandSpec[];
 }): { command: SkillCommandSpec; args?: string } | null {
-  const trimmed = params.commandBodyNormalized.trim();
-  if (!trimmed.startsWith("/")) {
+  const parsed = parseSlashCommandNameAndArgs(params.commandBodyNormalized);
+  if (!parsed) {
     return null;
   }
-  const match = trimmed.match(/^\/([^\s]+)(?:\s+([\s\S]+))?$/);
-  if (!match) {
-    return null;
-  }
-  const commandName = match[1]?.trim().toLowerCase();
-  if (!commandName) {
-    return null;
-  }
+  const { commandName, args } = parsed;
   if (commandName === "skill") {
-    const remainder = match[2]?.trim();
+    const remainder = args?.trim();
     if (!remainder) {
       return null;
     }
@@ -192,13 +204,12 @@ export function resolveSkillCommandInvocation(params: {
     if (!skillCommand) {
       return null;
     }
-    const args = skillMatch[2]?.trim();
-    return { command: skillCommand, args: args || undefined };
+    const skillArgs = skillMatch[2]?.trim();
+    return { command: skillCommand, args: skillArgs || undefined };
   }
   const command = params.skillCommands.find((entry) => entry.name.toLowerCase() === commandName);
   if (!command) {
     return null;
   }
-  const args = match[2]?.trim();
   return { command, args: args || undefined };
 }

@@ -89,6 +89,33 @@ describe("resolveSkillCommandInvocation", () => {
     expect(invocation?.args).toBe("do the thing");
   });
 
+  it("preserves args for bot-suffixed slash commands", () => {
+    const invocation = resolveSkillCommandInvocation({
+      commandBodyNormalized: "/demo_skill@mybot 115",
+      skillCommands: [{ name: "demo_skill", skillName: "demo-skill", description: "Demo" }],
+    });
+    expect(invocation?.command.skillName).toBe("demo-skill");
+    expect(invocation?.args).toBe("115");
+  });
+
+  it("preserves args for bot-suffixed slash commands with colon separator", () => {
+    const invocation = resolveSkillCommandInvocation({
+      commandBodyNormalized: "/demo_skill@mybot:115",
+      skillCommands: [{ name: "demo_skill", skillName: "demo-skill", description: "Demo" }],
+    });
+    expect(invocation?.command.skillName).toBe("demo-skill");
+    expect(invocation?.args).toBe("115");
+  });
+
+  it("preserves args for colon-style slash command syntax", () => {
+    const invocation = resolveSkillCommandInvocation({
+      commandBodyNormalized: "/demo_skill:115",
+      skillCommands: [{ name: "demo_skill", skillName: "demo-skill", description: "Demo" }],
+    });
+    expect(invocation?.command.skillName).toBe("demo-skill");
+    expect(invocation?.args).toBe("115");
+  });
+
   it("supports /skill with name argument", () => {
     const invocation = resolveSkillCommandInvocation({
       commandBodyNormalized: "/skill demo_skill do the thing",
