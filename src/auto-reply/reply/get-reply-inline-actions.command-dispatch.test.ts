@@ -9,9 +9,16 @@ import type { TypingController } from "./typing.js";
 const toolingMocks = vi.hoisted(() => ({
   createOpenClawTools: vi.fn(),
 }));
+const skillCommandMocks = vi.hoisted(() => ({
+  listSkillCommandsForWorkspace: vi.fn(),
+}));
 
 vi.mock("../../agents/openclaw-tools.js", () => ({
   createOpenClawTools: toolingMocks.createOpenClawTools,
+}));
+vi.mock("../skill-commands.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../skill-commands.js")>()),
+  listSkillCommandsForWorkspace: skillCommandMocks.listSkillCommandsForWorkspace,
 }));
 
 const { handleInlineActions } = await import("./get-reply-inline-actions.js");
@@ -90,6 +97,7 @@ const createHandleInlineActionsInput = (params: {
 describe("handleInlineActions", () => {
   beforeEach(() => {
     toolingMocks.createOpenClawTools.mockReset();
+    skillCommandMocks.listSkillCommandsForWorkspace.mockReset();
   });
 
   it("passes slash command arguments through tool dispatch", async () => {
@@ -136,6 +144,62 @@ describe("handleInlineActions", () => {
     );
 
     expect(result).toEqual({ kind: "reply", reply: { text: "dispatched" } });
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock).toHaveBeenCalledWith(
+      expect.stringContaining("cmd_"),
+      expect.objectContaining({
+        command: "115",
+        commandName: "dispatch",
+        skillName: "dispatch-skill",
+      }),
+    );
+  });
+
+  it("loads workspace skill commands when preloaded list is empty", async () => {
+    const typing = createTypingController();
+    const executeMock = vi.fn(async () => ({ content: "dispatched" }));
+    toolingMocks.createOpenClawTools.mockReturnValue([
+      {
+        name: "sessions_send",
+        execute: executeMock,
+      } as never,
+    ]);
+    const workspaceCommands: SkillCommandSpec[] = [
+      {
+        name: "dispatch",
+        skillName: "dispatch-skill",
+        description: "Command dispatch",
+        dispatch: {
+          kind: "tool",
+          toolName: "sessions_send",
+        },
+      },
+    ];
+    skillCommandMocks.listSkillCommandsForWorkspace.mockReturnValue(workspaceCommands as never);
+
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      From: "telegram:999",
+      To: "telegram:999",
+      MessageThreadId: "t-1",
+      OriginatingTo: "telegram:999",
+    });
+
+    const result = await handleInlineActions(
+      createHandleInlineActionsInput({
+        ctx,
+        typing,
+        cleanedBody: "/dispatch 115",
+        command: { commandBodyNormalized: "/dispatch 115" },
+        overrides: {
+          skillCommands: [],
+        },
+      }),
+    );
+
+    expect(result).toEqual({ kind: "reply", reply: { text: "dispatched" } });
+    expect(skillCommandMocks.listSkillCommandsForWorkspace).toHaveBeenCalledTimes(1);
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect(executeMock).toHaveBeenCalledWith(
       expect.stringContaining("cmd_"),

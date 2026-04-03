@@ -164,8 +164,11 @@ export async function handleInlineActions(params: {
     slashCommandName !== null &&
     // `/skill …` needs the full skill command list.
     (slashCommandName === "skill" || !builtinSlashCommands.has(slashCommandName));
+  const hasPreloadedSkillCommands = Boolean(
+    params.skillCommands && params.skillCommands.length > 0,
+  );
   const skillCommands =
-    shouldLoadSkillCommands && params.skillCommands
+    shouldLoadSkillCommands && hasPreloadedSkillCommands
       ? params.skillCommands
       : shouldLoadSkillCommands
         ? listSkillCommandsForWorkspace({
