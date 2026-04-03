@@ -623,4 +623,100 @@ describe("registerTelegramNativeCommands", () => {
       }),
     );
   });
+
+  it("preserves arguments for telegram-normalized skill command names", async () => {
+    const commandHandlers = new Map<string, (ctx: unknown) => Promise<void>>();
+    const cfg: OpenClawConfig = {
+      agents: {
+        list: [{ id: "main", default: true }],
+      },
+    };
+    const executeMock = vi.fn(async () => ({ content: "dispatched" }));
+    const skillCommands: SkillCommandSpec[] = [
+      {
+        name: "dispatch-command",
+        skillName: "dispatch-command-skill",
+        description: "Command dispatch",
+        dispatch: {
+          kind: "tool",
+          toolName: "sessions_send",
+        },
+      },
+    ];
+    listSkillCommandsForAgents.mockReturnValue(skillCommands as never);
+
+    openclawToolsMocks.createOpenClawTools.mockReturnValue([
+      {
+        name: "sessions_send",
+        execute: executeMock,
+      } as never,
+    ]);
+
+    replyDispatcherMocks.dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
+      async (dispatchParams) => {
+        const invocation = resolveSkillCommandInvocation({
+          commandBodyNormalized: String(dispatchParams.ctx.CommandBody ?? ""),
+          skillCommands,
+        });
+        expect(invocation).toMatchObject({
+          command: expect.objectContaining({
+            name: "dispatch-command",
+            skillName: "dispatch-command-skill",
+          }),
+          args: "115",
+        });
+
+        const tools = openclawToolsMocks.createOpenClawTools();
+        const tool = tools.find((candidate) => candidate.name === "sessions_send");
+        expect(tool).toBeTruthy();
+        await tool!.execute("cmd_dispatch_command", {
+          command: invocation?.args ?? "",
+          commandName: "dispatch-command",
+          skillName: "dispatch-command-skill",
+        });
+
+        return {
+          queuedFinal: false,
+          counts: {},
+        };
+      },
+    );
+
+    registerTelegramNativeCommands({
+      ...buildParams(cfg),
+      bot: {
+        api: {
+          setMyCommands: vi.fn().mockResolvedValue(undefined),
+          sendMessage: vi.fn().mockResolvedValue(undefined),
+        },
+        command: vi.fn((name: string, cb: (ctx: unknown) => Promise<void>) => {
+          commandHandlers.set(name, cb);
+        }),
+      } as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+    });
+
+    const handler = commandHandlers.get("dispatch_command");
+    expect(handler).toBeTruthy();
+
+    await handler?.({
+      match: "/dispatch_command 115",
+      message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 123, type: "private" },
+        from: { id: 456, username: "alice" },
+        text: "/dispatch_command 115",
+      },
+    });
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock).toHaveBeenCalledWith(
+      "cmd_dispatch_command",
+      expect.objectContaining({
+        command: "115",
+        commandName: "dispatch-command",
+        skillName: "dispatch-command-skill",
+      }),
+    );
+  });
 });

@@ -87,11 +87,14 @@ function parseTelegramNativeCommandArgs(input: string, commandName: string): str
   if (!trimmed) {
     return "";
   }
-  const lowerName = commandName.trim().toLowerCase();
+  const normalizedCommandName = normalizeTelegramCommandName(commandName);
+  if (!normalizedCommandName) {
+    return null;
+  }
   const slashMatch = trimmed.match(/^\/([^\s@]+)(?:@[^\s:]+)?(?:[:\s]+([\s\S]*))?$/);
   if (slashMatch) {
-    const invoked = slashMatch[1]?.trim().toLowerCase();
-    if (!invoked || invoked !== lowerName) {
+    const invoked = normalizeTelegramCommandName(slashMatch[1]?.trim() ?? "");
+    if (!invoked || invoked !== normalizedCommandName) {
       return null;
     }
     return slashMatch[2]?.trim() ?? "";
@@ -101,8 +104,8 @@ function parseTelegramNativeCommandArgs(input: string, commandName: string): str
   if (!commandMatch) {
     return null;
   }
-  const invoked = commandMatch[1]?.trim().toLowerCase();
-  if (!invoked || invoked !== lowerName) {
+  const invoked = normalizeTelegramCommandName(commandMatch[1]?.trim() ?? "");
+  if (!invoked || invoked !== normalizedCommandName) {
     return null;
   }
   return commandMatch[2]?.trim() ?? "";
