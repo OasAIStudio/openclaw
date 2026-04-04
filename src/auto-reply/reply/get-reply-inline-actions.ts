@@ -48,7 +48,7 @@ function resolveSlashCommandName(commandBodyNormalized: string): string | null {
   if (!trimmed.startsWith("/")) {
     return null;
   }
-  const match = trimmed.match(/^\/([^\s:]+)(?::|\s|$)/);
+  const match = trimmed.match(/^\/([^\s:@]+)(?:@[^\s:]+)?(?::|\s|$)/);
   const name = match?.[1]?.trim().toLowerCase() ?? "";
   return name ? name : null;
 }
@@ -164,8 +164,11 @@ export async function handleInlineActions(params: {
     slashCommandName !== null &&
     // `/skill …` needs the full skill command list.
     (slashCommandName === "skill" || !builtinSlashCommands.has(slashCommandName));
+  const hasPreloadedSkillCommands = Boolean(
+    params.skillCommands && params.skillCommands.length > 0,
+  );
   const skillCommands =
-    shouldLoadSkillCommands && params.skillCommands
+    shouldLoadSkillCommands && hasPreloadedSkillCommands
       ? params.skillCommands
       : shouldLoadSkillCommands
         ? listSkillCommandsForWorkspace({
@@ -330,7 +333,10 @@ export async function handleInlineActions(params: {
 
   const runCommands = (commandInput: typeof command) =>
     handleCommands({
-      ctx,
+      // Pass sessionCtx so command handlers can mutate stripped body for same-turn continuation.
+      ctx: sessionCtx,
+      // Keep original finalized context in sync when command handlers need outer-dispatch side effects.
+      rootCtx: ctx,
       cfg,
       command: commandInput,
       agentId,

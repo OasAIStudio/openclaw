@@ -69,10 +69,14 @@ vi.mock("../agents/skills.js", () => {
 
 let listSkillCommandsForAgents: typeof import("./skill-commands.js").listSkillCommandsForAgents;
 let resolveSkillCommandInvocation: typeof import("./skill-commands.js").resolveSkillCommandInvocation;
+let skillCommandsTesting: typeof import("./skill-commands.js").__testing;
 
 beforeAll(async () => {
-  ({ listSkillCommandsForAgents, resolveSkillCommandInvocation } =
-    await import("./skill-commands.js"));
+  ({
+    listSkillCommandsForAgents,
+    resolveSkillCommandInvocation,
+    __testing: skillCommandsTesting,
+  } = await import("./skill-commands.js"));
 });
 
 describe("resolveSkillCommandInvocation", () => {
@@ -83,6 +87,33 @@ describe("resolveSkillCommandInvocation", () => {
     });
     expect(invocation?.command.skillName).toBe("demo-skill");
     expect(invocation?.args).toBe("do the thing");
+  });
+
+  it("preserves args for bot-suffixed slash commands", () => {
+    const invocation = resolveSkillCommandInvocation({
+      commandBodyNormalized: "/demo_skill@mybot 115",
+      skillCommands: [{ name: "demo_skill", skillName: "demo-skill", description: "Demo" }],
+    });
+    expect(invocation?.command.skillName).toBe("demo-skill");
+    expect(invocation?.args).toBe("115");
+  });
+
+  it("preserves args for bot-suffixed slash commands with colon separator", () => {
+    const invocation = resolveSkillCommandInvocation({
+      commandBodyNormalized: "/demo_skill@mybot:115",
+      skillCommands: [{ name: "demo_skill", skillName: "demo-skill", description: "Demo" }],
+    });
+    expect(invocation?.command.skillName).toBe("demo-skill");
+    expect(invocation?.args).toBe("115");
+  });
+
+  it("preserves args for colon-style slash command syntax", () => {
+    const invocation = resolveSkillCommandInvocation({
+      commandBodyNormalized: "/demo_skill:115",
+      skillCommands: [{ name: "demo_skill", skillName: "demo-skill", description: "Demo" }],
+    });
+    expect(invocation?.command.skillName).toBe("demo-skill");
+    expect(invocation?.args).toBe("115");
   });
 
   it("supports /skill with name argument", () => {
@@ -125,7 +156,7 @@ describe("listSkillCommandsForAgents", () => {
     );
   });
 
-  it("lists all agents when agentIds is omitted", async () => {
+  it("deduplicates by skillName across agents, keeping the first registration", async () => {
     const baseDir = await makeTempDir("openclaw-skills-");
     const mainWorkspace = path.join(baseDir, "main");
     const researchWorkspace = path.join(baseDir, "research");
@@ -144,7 +175,7 @@ describe("listSkillCommandsForAgents", () => {
     });
     const names = commands.map((entry) => entry.name);
     expect(names).toContain("demo_skill");
-    expect(names).toContain("demo_skill_2");
+    expect(names).not.toContain("demo_skill_2");
     expect(names).toContain("extra_skill");
   });
 
@@ -295,5 +326,40 @@ describe("listSkillCommandsForAgents", () => {
     // The valid agent's skills should still be listed despite the broken one.
     expect(commands.length).toBeGreaterThan(0);
     expect(commands.map((entry) => entry.skillName)).toContain("demo-skill");
+  });
+});
+
+describe("dedupeBySkillName", () => {
+  it("keeps the first entry when multiple commands share a skillName", () => {
+    const input = [
+      { name: "github", skillName: "github", description: "GitHub" },
+      { name: "github_2", skillName: "github", description: "GitHub" },
+      { name: "weather", skillName: "weather", description: "Weather" },
+      { name: "weather_2", skillName: "weather", description: "Weather" },
+    ];
+    const output = skillCommandsTesting.dedupeBySkillName(input);
+    expect(output.map((e) => e.name)).toEqual(["github", "weather"]);
+  });
+
+  it("matches skillName case-insensitively", () => {
+    const input = [
+      { name: "ClawHub", skillName: "ClawHub", description: "ClawHub" },
+      { name: "clawhub_2", skillName: "clawhub", description: "ClawHub" },
+    ];
+    const output = skillCommandsTesting.dedupeBySkillName(input);
+    expect(output).toHaveLength(1);
+    expect(output[0]?.name).toBe("ClawHub");
+  });
+
+  it("passes through commands with an empty skillName", () => {
+    const input = [
+      { name: "a", skillName: "", description: "A" },
+      { name: "b", skillName: "", description: "B" },
+    ];
+    expect(skillCommandsTesting.dedupeBySkillName(input)).toHaveLength(2);
+  });
+
+  it("returns an empty array for empty input", () => {
+    expect(skillCommandsTesting.dedupeBySkillName([])).toEqual([]);
   });
 });

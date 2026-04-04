@@ -97,4 +97,28 @@ describe("pi tool definition adapter", () => {
     expect(result.content[0]).toMatchObject({ type: "text" });
     expect((result.content[0] as { text?: string }).text).toContain('"count"');
   });
+
+  it("coerces empty content arrays to include content", async () => {
+    const tool = {
+      name: "memory_query_empty",
+      label: "Memory Query Empty",
+      description: "returns empty content",
+      parameters: Type.Object({}),
+      execute: (async () => ({
+        content: [],
+        details: {
+          status: "ok",
+          tool: "memory_query_empty",
+        },
+      })) as unknown as AgentTool["execute"],
+    } satisfies AgentTool;
+
+    const result = await executeTool(tool, "call5");
+    expect(result.details).toEqual({
+      status: "ok",
+      tool: "memory_query_empty",
+    });
+    expect(result.content[0]).toMatchObject({ type: "text" });
+    expect((result.content[0] as { text?: string }).text).toContain('"status":"ok"');
+  });
 });

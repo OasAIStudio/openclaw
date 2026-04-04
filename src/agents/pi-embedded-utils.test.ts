@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   extractAssistantText,
   formatReasoningMessage,
+  rewriteKimiXmlToolCallsInMessage,
+  promoteThinkingTagsToBlocks,
+  parseKimiFunctionCallsFromXml,
   stripDowngradedToolCallText,
 } from "./pi-embedded-utils.js";
 
@@ -474,6 +477,89 @@ File contents here`,
   });
 });
 
+describe("parseKimiFunctionCallsFromXml", () => {
+  it("extracts a single invoke block and preserves text", () => {
+    const result = parseKimiFunctionCallsFromXml(
+      `Hello.<function_calls>\n  <invoke name="exec">\n    <parameter name="command">cat ~/.openclaw/logs/cron.log</parameter>\n  </invoke>\n</function_calls>World`,
+    );
+
+    expect(result.text).toBe("Hello.World");
+    expect(result.toolCalls).toEqual([
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: {
+          command: "cat ~/.openclaw/logs/cron.log",
+        },
+      },
+    ]);
+  });
+
+  it("extracts multiple invoke blocks while removing them from text", () => {
+    const result = parseKimiFunctionCallsFromXml(
+      `Before<invoke name="Read">\n<parameter name="path">/tmp/file1.txt</parameter>\n</invoke>Middle<invoke name="exec">\n<parameter name="command">pwd</parameter>\n</invoke>After`,
+    );
+
+    expect(result.text).toBe("BeforeMiddleAfter");
+    expect(result.toolCalls).toEqual([
+      {
+        type: "toolCall",
+        name: "Read",
+        arguments: {
+          path: "/tmp/file1.txt",
+        },
+      },
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: {
+          command: "pwd",
+        },
+      },
+    ]);
+  });
+
+  it("decodes escaped parameter values", () => {
+    const result = parseKimiFunctionCallsFromXml(
+      `<invoke name="exec"><parameter name="command">echo &quot;done&quot; &amp;&amp; ls &lt;1&gt;</parameter></invoke>`,
+    );
+
+    expect(result.toolCalls).toEqual([
+      {
+        type: "toolCall",
+        name: "exec",
+        arguments: {
+          command: 'echo "done" && ls <1>',
+        },
+      },
+    ]);
+    expect(result.text).toBe("");
+  });
+});
+
+describe("rewriteKimiXmlToolCallsInMessage", () => {
+  it("converts string assistant content with Kimi XML into toolCall blocks", () => {
+    const message: Record<string, unknown> = {
+      role: "assistant",
+      content: '<invoke name="exec"><parameter name="command">pwd</parameter></invoke>',
+    };
+
+    const changed = rewriteKimiXmlToolCallsInMessage(message);
+
+    expect(changed).toBe(true);
+    expect(message).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "exec",
+          arguments: { command: "pwd" },
+        },
+      ],
+    });
+  });
+});
+
 describe("formatReasoningMessage", () => {
   it("returns empty string for whitespace-only input", () => {
     expect(formatReasoningMessage("   \n  \t  ")).toBe("");
@@ -546,6 +632,39 @@ describe("stripDowngradedToolCallText", () => {
     for (const testCase of cases) {
       expect(stripDowngradedToolCallText(testCase.text), testCase.name).toBe(testCase.expected);
     }
+  });
+});
+
+describe("promoteThinkingTagsToBlocks", () => {
+  it("does not crash on malformed null content entries", () => {
+    const msg = makeAssistantMessage({
+      role: "assistant",
+      content: [null as never, { type: "text", text: "<thinking>hello</thinking>ok" }],
+      timestamp: Date.now(),
+    });
+    expect(() => promoteThinkingTagsToBlocks(msg)).not.toThrow();
+    const types = msg.content.map((b: { type?: string }) => b?.type);
+    expect(types).toContain("thinking");
+    expect(types).toContain("text");
+  });
+
+  it("does not crash on undefined content entries", () => {
+    const msg = makeAssistantMessage({
+      role: "assistant",
+      content: [undefined as never, { type: "text", text: "no tags here" }],
+      timestamp: Date.now(),
+    });
+    expect(() => promoteThinkingTagsToBlocks(msg)).not.toThrow();
+  });
+
+  it("passes through well-formed content unchanged when no thinking tags", () => {
+    const msg = makeAssistantMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "hello world" }],
+      timestamp: Date.now(),
+    });
+    promoteThinkingTagsToBlocks(msg);
+    expect(msg.content).toEqual([{ type: "text", text: "hello world" }]);
   });
 });
 

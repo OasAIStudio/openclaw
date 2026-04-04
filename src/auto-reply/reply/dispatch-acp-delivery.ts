@@ -65,6 +65,11 @@ export function createAcpDispatchDeliveryCoordinator(params: {
     },
     toolMessageByCallId: new Map(),
   };
+  const messageId =
+    params.ctx.MessageSidFull?.trim() ??
+    params.ctx.MessageSid ??
+    params.ctx.MessageSidFirst ??
+    params.ctx.MessageSidLast;
 
   const startReplyLifecycleOnce = async () => {
     if (state.startedReplyLifecycle) {
@@ -154,6 +159,7 @@ export function createAcpDispatchDeliveryCoordinator(params: {
         channel: params.originatingChannel,
         to: params.originatingTo,
         sessionKey: params.ctx.SessionKey,
+        messageId,
         accountId: params.ctx.AccountId,
         threadId: params.ctx.MessageThreadId,
         cfg: params.cfg,

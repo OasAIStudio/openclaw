@@ -289,26 +289,53 @@ export function buildAssistantMessageFromResponse(
   modelInfo: { api: string; provider: string; id: string },
 ): AssistantMessage {
   const content: (TextContent | ToolCall)[] = [];
+  const output = Array.isArray(response.output) ? response.output : [];
 
-  for (const item of response.output ?? []) {
-    if (item.type === "message") {
-      for (const part of item.content ?? []) {
-        if (part.type === "output_text" && part.text) {
-          content.push({ type: "text", text: part.text });
+  for (const item of output) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const typedItem = item as { type?: unknown; content?: unknown; name?: unknown; call_id?: unknown; arguments?: unknown };
+    if (typedItem.type === "message") {
+      const messageContent = typedItem.content;
+      if (typeof messageContent === "string") {
+        if (messageContent) {
+          content.push({ type: "text", text: messageContent });
+        }
+        continue;
+      }
+      if (Array.isArray(messageContent)) {
+        for (const part of messageContent as Array<{ type?: unknown; text?: unknown }>) {
+          if (part.type === "output_text" && typeof part.text === "string" && part.text) {
+            content.push({ type: "text", text: part.text });
+          }
+        }
+        continue;
+      }
+      if (messageContent && typeof messageContent === "object" && typeof (messageContent as { text?: unknown }).text === "string") {
+        const text = (messageContent as { text: string }).text;
+        if (text) {
+          content.push({ type: "text", text });
         }
       }
-    } else if (item.type === "function_call") {
-      const toolName = toNonEmptyString(item.name);
+      continue;
+    }
+
+    if (typedItem.type === "function_call") {
+      const toolName = toNonEmptyString(typedItem.name);
       if (!toolName) {
         continue;
       }
+      const rawArguments = typedItem.arguments;
+      const args =
+        typeof rawArguments === "string" ? rawArguments : JSON.stringify(rawArguments ?? {});
       content.push({
         type: "toolCall",
-        id: toNonEmptyString(item.call_id) ?? `call_${randomUUID()}`,
+        id: toNonEmptyString(typedItem.call_id) ?? `call_${randomUUID()}`,
         name: toolName,
         arguments: (() => {
           try {
-            return JSON.parse(item.arguments) as Record<string, unknown>;
+            return JSON.parse(args) as Record<string, unknown>;
           } catch {
             return {} as Record<string, unknown>;
           }
@@ -569,7 +596,7 @@ export function createOpenAIWebSocketStreamFn(
       if (streamOpts?.temperature !== undefined) {
         extraParams.temperature = streamOpts.temperature;
       }
-      if (streamOpts?.maxTokens) {
+      if (streamOpts?.maxTokens !== undefined) {
         extraParams.max_output_tokens = streamOpts.maxTokens;
       }
       if (streamOpts?.topP !== undefined) {
@@ -589,20 +616,29 @@ export function createOpenAIWebSocketStreamFn(
         extraParams.reasoning = reasoning;
       }
 
+      // Respect compat.supportsStore — providers like Gemini reject unknown
+      // fields such as `store` with a 400 error.  Fixes #39086.
+      const supportsStore = (model as { compat?: { supportsStore?: boolean } }).compat
+        ?.supportsStore;
+
       const payload: Record<string, unknown> = {
         type: "response.create",
         model: model.id,
-        store: false,
+        ...(supportsStore !== false ? { store: false } : {}),
         input: inputItems,
         instructions: context.systemPrompt ?? undefined,
         tools: tools.length > 0 ? tools : undefined,
         ...(prevResponseId ? { previous_response_id: prevResponseId } : {}),
         ...extraParams,
       };
-      options?.onPayload?.(payload);
+      const nextPayload = await options?.onPayload?.(payload, model);
+      const requestPayload =
+        nextPayload && typeof nextPayload === "object"
+          ? (nextPayload as Parameters<OpenAIWebSocketManager["send"]>[0])
+          : (payload as Parameters<OpenAIWebSocketManager["send"]>[0]);
 
       try {
-        session.manager.send(payload as Parameters<OpenAIWebSocketManager["send"]>[0]);
+        session.manager.send(requestPayload);
       } catch (sendErr) {
         if (transport === "websocket") {
           throw sendErr instanceof Error ? sendErr : new Error(String(sendErr));

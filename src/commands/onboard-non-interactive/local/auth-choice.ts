@@ -10,17 +10,22 @@ import { normalizeSecretInputModeInput } from "../../auth-choice.apply-helpers.j
 import { buildTokenProfileId, validateAnthropicSetupToken } from "../../auth-token.js";
 import { applyGoogleGeminiModelDefault } from "../../google-gemini-model-default.js";
 import { applyPrimaryModel } from "../../model-picker.js";
+import { configureOllamaNonInteractive } from "../../ollama-setup.js";
+import type { ApiKeyStorageOptions } from "../../onboard-auth.credentials.js";
 import {
   applyAuthProfileConfig,
   applyCloudflareAiGatewayConfig,
   applyKilocodeConfig,
   applyQianfanConfig,
+  applyModelStudioConfig,
+  applyModelStudioConfigCn,
   applyKimiCodeConfig,
   applyMinimaxApiConfig,
   applyMinimaxApiConfigCn,
   applyMinimaxConfig,
   applyMoonshotConfig,
   applyMoonshotConfigCn,
+  applyOpencodeGoConfig,
   applyOpencodeZenConfig,
   applyOpenrouterConfig,
   applySyntheticConfig,
@@ -37,6 +42,7 @@ import {
   setCloudflareAiGatewayConfig,
   setByteplusApiKey,
   setQianfanApiKey,
+  setModelStudioApiKey,
   setGeminiApiKey,
   setKilocodeApiKey,
   setKimiCodingApiKey,
@@ -45,6 +51,7 @@ import {
   setMinimaxApiKey,
   setMoonshotApiKey,
   setOpenaiApiKey,
+  setOpencodeGoApiKey,
   setOpencodeZenApiKey,
   setOpenrouterApiKey,
   setSyntheticApiKey,
@@ -87,11 +94,9 @@ export async function applyNonInteractiveAuthChoice(params: {
     runtime.exit(1);
     return null;
   }
-  const apiKeyStorageOptions = requestedSecretInputMode
-    ? { secretInputMode: requestedSecretInputMode }
-    : undefined;
   const toStoredSecretInput = (resolved: ResolvedNonInteractiveApiKey): SecretInput | null => {
-    if (requestedSecretInputMode !== "ref") {
+    const storePlaintextSecret = requestedSecretInputMode !== "ref"; // pragma: allowlist secret
+    if (storePlaintextSecret) {
       return resolved.key;
     }
     if (resolved.source !== "env") {
@@ -120,6 +125,12 @@ export async function applyNonInteractiveAuthChoice(params: {
       ...input,
       secretInputMode: requestedSecretInputMode,
     });
+  const apiKeyStorageOptionsForOnboard: ApiKeyStorageOptions | undefined = requestedSecretInputMode
+    ? {
+        secretInputMode: requestedSecretInputMode,
+        syncSiblingAgents: true,
+      }
+    : { syncSiblingAgents: true };
   const maybeSetResolvedApiKey = async (
     resolved: ResolvedNonInteractiveApiKey,
     setter: (value: SecretInput) => Promise<void> | void,
@@ -168,6 +179,10 @@ export async function applyNonInteractiveAuthChoice(params: {
     return null;
   }
 
+  if (authChoice === "ollama") {
+    return configureOllamaNonInteractive({ nextConfig, opts, runtime });
+  }
+
   if (authChoice === "apiKey") {
     const resolved = await resolveApiKey({
       provider: "anthropic",
@@ -182,7 +197,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setAnthropicApiKey(value, undefined, apiKeyStorageOptions),
+        setAnthropicApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -263,7 +278,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setGeminiApiKey(value, undefined, apiKeyStorageOptions),
+        setGeminiApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -296,7 +311,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setZaiApiKey(value, undefined, apiKeyStorageOptions),
+        setZaiApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -349,7 +364,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setXiaomiApiKey(value, undefined, apiKeyStorageOptions),
+        setXiaomiApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -376,7 +391,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setXaiApiKey(value, undefined, apiKeyStorageOptions),
+        setXaiApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -403,7 +418,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setMistralApiKey(value, undefined, apiKeyStorageOptions),
+        setMistralApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -430,7 +445,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setVolcengineApiKey(value, undefined, apiKeyStorageOptions),
+        setVolcengineApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -457,7 +472,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setByteplusApiKey(value, undefined, apiKeyStorageOptions),
+        setByteplusApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -484,7 +499,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setQianfanApiKey(value, undefined, apiKeyStorageOptions),
+        setQianfanApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -495,6 +510,60 @@ export async function applyNonInteractiveAuthChoice(params: {
       mode: "api_key",
     });
     return applyQianfanConfig(nextConfig);
+  }
+
+  if (authChoice === "modelstudio-api-key-cn") {
+    const resolved = await resolveApiKey({
+      provider: "modelstudio",
+      cfg: baseConfig,
+      flagValue: opts.modelstudioApiKeyCn,
+      flagName: "--modelstudio-api-key-cn",
+      envVar: "MODELSTUDIO_API_KEY",
+      runtime,
+    });
+    if (!resolved) {
+      return null;
+    }
+    if (
+      !(await maybeSetResolvedApiKey(resolved, (value) =>
+        setModelStudioApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
+      ))
+    ) {
+      return null;
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "modelstudio:default",
+      provider: "modelstudio",
+      mode: "api_key",
+    });
+    return applyModelStudioConfigCn(nextConfig);
+  }
+
+  if (authChoice === "modelstudio-api-key") {
+    const resolved = await resolveApiKey({
+      provider: "modelstudio",
+      cfg: baseConfig,
+      flagValue: opts.modelstudioApiKey,
+      flagName: "--modelstudio-api-key",
+      envVar: "MODELSTUDIO_API_KEY",
+      runtime,
+    });
+    if (!resolved) {
+      return null;
+    }
+    if (
+      !(await maybeSetResolvedApiKey(resolved, (value) =>
+        setModelStudioApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
+      ))
+    ) {
+      return null;
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "modelstudio:default",
+      provider: "modelstudio",
+      mode: "api_key",
+    });
+    return applyModelStudioConfig(nextConfig);
   }
 
   if (authChoice === "openai-api-key") {
@@ -511,7 +580,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setOpenaiApiKey(value, undefined, apiKeyStorageOptions),
+        setOpenaiApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -538,7 +607,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setOpenrouterApiKey(value, undefined, apiKeyStorageOptions),
+        setOpenrouterApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -565,7 +634,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setKilocodeApiKey(value, undefined, apiKeyStorageOptions),
+        setKilocodeApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -592,7 +661,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setLitellmApiKey(value, undefined, apiKeyStorageOptions),
+        setLitellmApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -619,7 +688,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setVercelAiGatewayApiKey(value, undefined, apiKeyStorageOptions),
+        setVercelAiGatewayApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -666,7 +735,7 @@ export async function applyNonInteractiveAuthChoice(params: {
         gatewayId,
         stored,
         undefined,
-        apiKeyStorageOptions,
+        apiKeyStorageOptionsForOnboard,
       );
     }
     nextConfig = applyAuthProfileConfig(nextConfig, {
@@ -696,7 +765,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setMoonshotApiKey(value, undefined, apiKeyStorageOptions),
+        setMoonshotApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -731,7 +800,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setKimiCodingApiKey(value, undefined, apiKeyStorageOptions),
+        setKimiCodingApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -758,7 +827,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setSyntheticApiKey(value, undefined, apiKeyStorageOptions),
+        setSyntheticApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -785,7 +854,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setVeniceApiKey(value, undefined, apiKeyStorageOptions),
+        setVeniceApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -820,7 +889,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setMinimaxApiKey(value, undefined, profileId, apiKeyStorageOptions),
+        setMinimaxApiKey(value, undefined, profileId, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -855,7 +924,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setOpencodeZenApiKey(value, undefined, apiKeyStorageOptions),
+        setOpencodeZenApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -866,6 +935,33 @@ export async function applyNonInteractiveAuthChoice(params: {
       mode: "api_key",
     });
     return applyOpencodeZenConfig(nextConfig);
+  }
+
+  if (authChoice === "opencode-go") {
+    const resolved = await resolveApiKey({
+      provider: "opencode-go",
+      cfg: baseConfig,
+      flagValue: opts.opencodeGoApiKey,
+      flagName: "--opencode-go-api-key",
+      envVar: "OPENCODE_API_KEY",
+      runtime,
+    });
+    if (!resolved) {
+      return null;
+    }
+    if (
+      !(await maybeSetResolvedApiKey(resolved, (value) =>
+        setOpencodeGoApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
+      ))
+    ) {
+      return null;
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "opencode-go:default",
+      provider: "opencode-go",
+      mode: "api_key",
+    });
+    return applyOpencodeGoConfig(nextConfig);
   }
 
   if (authChoice === "together-api-key") {
@@ -882,7 +978,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setTogetherApiKey(value, undefined, apiKeyStorageOptions),
+        setTogetherApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -909,7 +1005,7 @@ export async function applyNonInteractiveAuthChoice(params: {
     }
     if (
       !(await maybeSetResolvedApiKey(resolved, (value) =>
-        setHuggingfaceApiKey(value, undefined, apiKeyStorageOptions),
+        setHuggingfaceApiKey(value, undefined, apiKeyStorageOptionsForOnboard),
       ))
     ) {
       return null;
@@ -948,7 +1044,8 @@ export async function applyNonInteractiveAuthChoice(params: {
       });
       let customApiKeyInput: SecretInput | undefined;
       if (resolvedCustomApiKey) {
-        if (requestedSecretInputMode === "ref") {
+        const storeCustomApiKeyAsRef = requestedSecretInputMode === "ref"; // pragma: allowlist secret
+        if (storeCustomApiKeyAsRef) {
           const stored = toStoredSecretInput(resolvedCustomApiKey);
           if (!stored) {
             return null;

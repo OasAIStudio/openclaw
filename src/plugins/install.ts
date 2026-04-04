@@ -27,6 +27,7 @@ import {
   installFromNpmSpecArchiveWithInstaller,
 } from "../infra/npm-pack-install.js";
 import { validateRegistryNpmSpec } from "../infra/npm-registry-spec.js";
+import { runCommandWithTimeout } from "../process/exec.js";
 import { extensionUsesSkippedScannerPath, isPathInside } from "../security/scan-paths.js";
 import * as skillScanner from "../security/skill-scanner.js";
 import { CONFIG_DIR, resolveUserPath } from "../utils.js";
@@ -349,10 +350,10 @@ async function installPluginFromPackageDir(
     copyErrorPrefix: "failed to copy plugin",
     hasDeps,
     depsLogMessage: "Installing plugin dependencies…",
-    afterCopy: async () => {
+    afterCopy: async (installedDir) => {
       for (const entry of extensions) {
-        const resolvedEntry = path.resolve(targetDir, entry);
-        if (!isPathInside(targetDir, resolvedEntry)) {
+        const resolvedEntry = path.resolve(installedDir, entry);
+        if (!isPathInside(installedDir, resolvedEntry)) {
           logger.warn?.(`extension entry escapes plugin directory: ${entry}`);
           continue;
         }
@@ -374,6 +375,77 @@ async function installPluginFromPackageDir(
     version: typeof manifest.version === "string" ? manifest.version : undefined,
     extensions,
   };
+}
+
+export async function ensurePluginDependenciesInstalled(
+  params: {
+    packageDir: string;
+  } & PackageInstallCommonParams,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const packageDir = resolveUserPath(params.packageDir);
+  const manifestPath = path.join(packageDir, "package.json");
+  if (!(await fileExists(manifestPath))) {
+    return { ok: true };
+  }
+
+  let manifest: PackageManifest;
+  try {
+    manifest = await readJsonFile<PackageManifest>(manifestPath);
+  } catch (err) {
+    return { ok: false, error: `invalid package.json: ${String(err)}` };
+  }
+
+  const dependencies = manifest.dependencies;
+  if (!dependencies || Object.keys(dependencies).length === 0) {
+    return { ok: true };
+  }
+
+  const missingDependencies: string[] = [];
+  for (const dependencyName of Object.keys(dependencies)) {
+    if (!(await fileExists(path.join(packageDir, "node_modules", dependencyName)))) {
+      missingDependencies.push(dependencyName);
+    }
+  }
+
+  if (missingDependencies.length === 0) {
+    return { ok: true };
+  }
+
+  if (params.dryRun) {
+    return { ok: true };
+  }
+
+  const logger = params.logger ?? defaultLogger;
+  const timed = resolveTimedInstallModeOptions(
+    {
+      timeoutMs: params.timeoutMs,
+      logger,
+      mode: params.mode,
+      dryRun: params.dryRun,
+    },
+    defaultLogger,
+  );
+  const timeoutMs = timed.timeoutMs;
+
+  logger.info?.(
+    `Installing plugin dependencies for ${path.basename(packageDir)} (${missingDependencies.length} missing)…`,
+  );
+
+  const npmInstallRes = await runCommandWithTimeout(
+    ["npm", "install", "--omit=dev", "--omit=peer", "--silent", "--ignore-scripts"],
+    {
+      timeoutMs: Math.max(timeoutMs, 300_000),
+      cwd: packageDir,
+    },
+  );
+  if (npmInstallRes.code !== 0) {
+    return {
+      ok: false,
+      error: npmInstallRes.stderr.trim() || npmInstallRes.stdout.trim() || "npm install failed",
+    };
+  }
+
+  return { ok: true };
 }
 
 export async function installPluginFromArchive(

@@ -1,12 +1,14 @@
 import type { DmPolicy } from "openclaw/plugin-sdk/matrix";
 import {
   addWildcardAllowFrom,
+  buildSingleChannelSecretPromptState,
   formatResolvedUnresolvedNote,
   formatDocsLink,
   hasConfiguredSecretInput,
   mergeAllowFromEntries,
   promptSingleChannelSecretInput,
   promptChannelAccessConfig,
+  setTopLevelChannelGroupPolicy,
   type SecretInput,
   type ChannelOnboardingAdapter,
   type ChannelOnboardingDmPolicy,
@@ -22,7 +24,9 @@ const channel = "matrix" as const;
 
 function setMatrixDmPolicy(cfg: CoreConfig, policy: DmPolicy) {
   const allowFrom =
-    policy === "open" ? addWildcardAllowFrom(cfg.channels?.matrix?.dm?.allowFrom) : undefined;
+    policy === "open"
+      ? addWildcardAllowFrom(cfg.channels?.matrix?.allowFrom ?? cfg.channels?.matrix?.dm?.allowFrom)
+      : undefined;
   return {
     ...cfg,
     channels: {
@@ -57,7 +61,8 @@ async function promptMatrixAllowFrom(params: {
   prompter: WizardPrompter;
 }): Promise<CoreConfig> {
   const { cfg, prompter } = params;
-  const existingAllowFrom = cfg.channels?.matrix?.dm?.allowFrom ?? [];
+  const existingAllowFrom =
+    cfg.channels?.matrix?.allowFrom ?? cfg.channels?.matrix?.dm?.allowFrom ?? [];
   const account = resolveMatrixAccount({ cfg });
   const canResolve = Boolean(account.configured);
 
@@ -143,17 +148,12 @@ async function promptMatrixAllowFrom(params: {
 }
 
 function setMatrixGroupPolicy(cfg: CoreConfig, groupPolicy: "open" | "allowlist" | "disabled") {
-  return {
-    ...cfg,
-    channels: {
-      ...cfg.channels,
-      matrix: {
-        ...cfg.channels?.matrix,
-        enabled: true,
-        groupPolicy,
-      },
-    },
-  };
+  return setTopLevelChannelGroupPolicy({
+    cfg,
+    channel: "matrix",
+    groupPolicy,
+    enabled: true,
+  }) as CoreConfig;
 }
 
 function setMatrixGroupRooms(cfg: CoreConfig, roomKeys: string[]) {
@@ -327,14 +327,20 @@ export const matrixOnboardingAdapter: ChannelOnboardingAdapter = {
             },
           }),
         ).trim();
+        const passwordPromptState = buildSingleChannelSecretPromptState({
+          accountConfigured: Boolean(existingPasswordConfigured),
+          hasConfigToken: existingPasswordConfigured,
+          allowEnv: true,
+          envValue: envPassword,
+        });
         const passwordResult = await promptSingleChannelSecretInput({
           cfg: next,
           prompter,
           providerHint: "matrix",
           credentialLabel: "password",
-          accountConfigured: Boolean(existingPasswordConfigured),
-          canUseEnv: Boolean(envPassword?.trim()) && !existingPasswordConfigured,
-          hasConfigToken: existingPasswordConfigured,
+          accountConfigured: passwordPromptState.accountConfigured,
+          canUseEnv: passwordPromptState.canUseEnv,
+          hasConfigToken: passwordPromptState.hasConfigToken,
           envPrompt: "MATRIX_PASSWORD detected. Use env var?",
           keepPrompt: "Matrix password already configured. Keep it?",
           inputPrompt: "Matrix password",

@@ -82,10 +82,13 @@ function normalizeToolExecutionResult(params: {
   const { toolName, result } = params;
   if (result && typeof result === "object") {
     const record = result as Record<string, unknown>;
-    if (Array.isArray(record.content)) {
+    if (Array.isArray(record.content) && record.content.length > 0) {
       return result as AgentToolResult<unknown>;
     }
-    logDebug(`tools: ${toolName} returned non-standard result (missing content[]); coercing`);
+    const length = Array.isArray(record.content) ? record.content.length : "missing";
+    logDebug(
+      `tools: ${toolName} returned non-standard result (content=${length}); coercing into text result`,
+    );
     const details = "details" in record ? record.details : record;
     const safeDetails = details ?? { status: "ok", tool: toolName };
     return {

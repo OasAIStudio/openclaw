@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
+import {
+  normalizePluginsConfig,
+  resolveEffectiveEnableState,
+  resolveEnableState,
+} from "./config-state.js";
 
 describe("normalizePluginsConfig", () => {
   it("uses default memory slot when not specified", () => {
@@ -47,6 +51,57 @@ describe("normalizePluginsConfig", () => {
     });
     expect(result.slots.memory).toBe("memory-core");
   });
+
+  it("normalizes plugin hook policy flags", () => {
+    const result = normalizePluginsConfig({
+      entries: {
+        "voice-call": {
+          hooks: {
+            allowPromptInjection: false,
+          },
+        },
+      },
+    });
+    expect(result.entries["voice-call"]?.hooks?.allowPromptInjection).toBe(false);
+  });
+
+  it("drops invalid plugin hook policy values", () => {
+    const result = normalizePluginsConfig({
+      entries: {
+        "voice-call": {
+          hooks: {
+            allowPromptInjection: "nope",
+          } as unknown as { allowPromptInjection: boolean },
+        },
+      },
+    });
+    expect(result.entries["voice-call"]?.hooks).toBeUndefined();
+  });
+
+  it("moves legacy plugin entry fields into config while preserving enabled/hooks", () => {
+    const result = normalizePluginsConfig({
+      entries: {
+        "openclaw-mem0": {
+          enabled: true,
+          mode: "persistent",
+          userId: "test-user",
+          autoRecall: true,
+          oss: false,
+          hooks: {
+            allowPromptInjection: false,
+          },
+        },
+      },
+    });
+    expect(result.entries["openclaw-mem0"]?.enabled).toBe(true);
+    expect(result.entries["openclaw-mem0"]?.hooks?.allowPromptInjection).toBe(false);
+    expect(result.entries["openclaw-mem0"]?.config).toEqual({
+      mode: "persistent",
+      userId: "test-user",
+      autoRecall: true,
+      oss: false,
+    });
+  });
 });
 
 describe("resolveEffectiveEnableState", () => {
@@ -82,6 +137,37 @@ describe("resolveEffectiveEnableState", () => {
         },
       },
     });
+    expect(state).toEqual({ enabled: false, reason: "disabled in config" });
+  });
+});
+
+describe("resolveEnableState", () => {
+  it("keeps the selected memory slot plugin enabled even when omitted from plugins.allow", () => {
+    const state = resolveEnableState(
+      "memory-core",
+      "bundled",
+      normalizePluginsConfig({
+        allow: ["telegram"],
+        slots: { memory: "memory-core" },
+      }),
+    );
+    expect(state).toEqual({ enabled: true });
+  });
+
+  it("keeps explicit disable authoritative for the selected memory slot plugin", () => {
+    const state = resolveEnableState(
+      "memory-core",
+      "bundled",
+      normalizePluginsConfig({
+        allow: ["telegram"],
+        slots: { memory: "memory-core" },
+        entries: {
+          "memory-core": {
+            enabled: false,
+          },
+        },
+      }),
+    );
     expect(state).toEqual({ enabled: false, reason: "disabled in config" });
   });
 });

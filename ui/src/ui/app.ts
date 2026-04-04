@@ -93,6 +93,8 @@ declare global {
 }
 
 const bootAssistantIdentity = normalizeAssistantIdentity({});
+const CHAT_RENDER_CHUNK_SIZE = 60;
+const CHAT_RENDER_INITIAL_COUNT = 60;
 
 function resolveOnboardingMode(): boolean {
   if (!window.location.search) {
@@ -111,6 +113,7 @@ function resolveOnboardingMode(): boolean {
 export class OpenClawApp extends LitElement {
   private i18nController = new I18nController(this);
   clientInstanceId = generateUUID();
+  connectGeneration = 0;
   @state() settings: UiSettings = loadSettings();
   constructor() {
     super();
@@ -135,13 +138,16 @@ export class OpenClawApp extends LitElement {
   @state() assistantName = bootAssistantIdentity.name;
   @state() assistantAvatar = bootAssistantIdentity.avatar;
   @state() assistantAgentId = bootAssistantIdentity.agentId ?? null;
+  @state() serverVersion: string | null = null;
 
   @state() sessionKey = this.settings.sessionKey;
   @state() chatLoading = false;
   @state() chatSending = false;
   @state() chatMessage = "";
   @state() chatMessages: unknown[] = [];
+  @state() chatRenderedMessageCount = 0;
   @state() chatToolMessages: unknown[] = [];
+  @state() chatStreamSegments: Array<{ text: string; ts: number }> = [];
   @state() chatStream: string | null = null;
   @state() chatStreamStartedAt: number | null = null;
   @state() chatRunId: string | null = null;
@@ -175,6 +181,7 @@ export class OpenClawApp extends LitElement {
   @state() execApprovalBusy = false;
   @state() execApprovalError: string | null = null;
   @state() pendingGatewayUrl: string | null = null;
+  pendingGatewayToken: string | null = null;
 
   @state() configLoading = false;
   @state() configRaw = "{\n}\n";
@@ -380,6 +387,7 @@ export class OpenClawApp extends LitElement {
   private chatHasAutoScrolled = false;
   private chatUserNearBottom = true;
   @state() chatNewMessagesBelow = false;
+  private chatRenderFrame: number | null = null;
   private nodesPollInterval: number | null = null;
   private logsPollInterval: number | null = null;
   private debugPollInterval: number | null = null;
@@ -409,11 +417,20 @@ export class OpenClawApp extends LitElement {
 
   disconnectedCallback() {
     handleDisconnected(this as unknown as Parameters<typeof handleDisconnected>[0]);
+    this.clearChatRenderFrame();
     super.disconnectedCallback();
   }
 
   protected updated(changed: Map<PropertyKey, unknown>) {
     handleUpdated(this as unknown as Parameters<typeof handleUpdated>[0], changed);
+    if (
+      changed.has("chatLoading") ||
+      changed.has("chatMessages") ||
+      changed.has("sessionKey") ||
+      changed.has("tab")
+    ) {
+      this.updateChatRenderWindow();
+    }
   }
 
   connect() {
@@ -453,6 +470,61 @@ export class OpenClawApp extends LitElement {
       true,
       Boolean(opts?.smooth),
     );
+  }
+
+  private clearChatRenderFrame() {
+    if (this.chatRenderFrame != null) {
+      window.cancelAnimationFrame(this.chatRenderFrame);
+      this.chatRenderFrame = null;
+    }
+  }
+
+  private scheduleChatRenderWindow() {
+    this.clearChatRenderFrame();
+    this.chatRenderFrame = window.requestAnimationFrame(() => {
+      this.chatRenderFrame = null;
+
+      const total = this.chatMessages.length;
+      if (this.chatRenderedMessageCount >= total) {
+        return;
+      }
+
+      if (this.chatLoading && this.chatRenderedMessageCount === 0 && total === 0) {
+        return;
+      }
+
+      const next = Math.min(total, this.chatRenderedMessageCount + CHAT_RENDER_CHUNK_SIZE);
+      this.chatRenderedMessageCount = next;
+
+      if (next < total) {
+        this.scheduleChatRenderWindow();
+      }
+    });
+  }
+
+  private updateChatRenderWindow() {
+    const total = this.chatMessages.length;
+
+    if (this.tab !== "chat") {
+      return;
+    }
+
+    if (total === 0) {
+      this.chatRenderedMessageCount = 0;
+      return;
+    }
+
+    if (this.chatLoading) {
+      if (this.chatRenderedMessageCount === 0) {
+        this.chatRenderedMessageCount = Math.min(CHAT_RENDER_INITIAL_COUNT, total);
+      }
+      this.scheduleChatRenderWindow();
+      return;
+    }
+
+    if (this.chatRenderedMessageCount < total) {
+      this.scheduleChatRenderWindow();
+    }
   }
 
   async loadAssistantIdentity() {
@@ -570,16 +642,20 @@ export class OpenClawApp extends LitElement {
     if (!nextGatewayUrl) {
       return;
     }
+    const nextToken = this.pendingGatewayToken?.trim() || "";
     this.pendingGatewayUrl = null;
+    this.pendingGatewayToken = null;
     applySettingsInternal(this as unknown as Parameters<typeof applySettingsInternal>[0], {
       ...this.settings,
       gatewayUrl: nextGatewayUrl,
+      token: nextToken,
     });
     this.connect();
   }
 
   handleGatewayUrlCancel() {
     this.pendingGatewayUrl = null;
+    this.pendingGatewayToken = null;
   }
 
   // Sidebar handlers for tool output viewing

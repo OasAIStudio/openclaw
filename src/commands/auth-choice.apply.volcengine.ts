@@ -31,7 +31,10 @@ export async function applyAuthChoiceVolcengine(
     validate: validateApiKeyInput,
     prompter: params.prompter,
     setCredential: async (apiKey, mode) =>
-      setVolcengineApiKey(apiKey, params.agentDir, { secretInputMode: mode }),
+      setVolcengineApiKey(apiKey, params.agentDir, {
+        secretInputMode: mode,
+        syncSiblingAgents: true,
+      }),
   });
   const configWithAuth = applyAuthProfileConfig(params.config, {
     profileId: "volcengine:default",
